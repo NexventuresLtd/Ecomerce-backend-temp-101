@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends,HTTPException,Request
+from fastapi import APIRouter, Depends,HTTPException, Request
+from fastapi.responses import HTMLResponse
 from typing import Annotated
 from starlette import status
 from db.connection import db_dependency
@@ -13,7 +14,7 @@ from .normal_login import login_for_access_token, get_current_user
 from .normal_register import register_user
 from .social_login import google_auth_token
 from .social_register import sign_up_with_google
-
+from .SaveUserLogs import clear_logs_endpoint,get_device_history
 
 
 
@@ -25,6 +26,17 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 user_dependency = Annotated[dict, Depends(get_current_user)]
 
 
+@router.get("/clear-devices", response_class=HTMLResponse)
+async def clear_devices_page(request: Request, token: str, db: db_dependency):
+    return await clear_logs_endpoint(request, token, db)
+
+@router.post("/clear-devices", response_class=HTMLResponse)
+async def clear_devices_action(request: Request, token: str, db: db_dependency):
+    return await clear_logs_endpoint(request, token, db)
+
+@router.get("/api/devices/history")
+async def api_device_history(request: Request, token: str, db: db_dependency):
+    return await get_device_history(request, token, db)
 
 # Protected Registration Route
 @router.post("/register")
@@ -101,7 +113,8 @@ async def social_auth_route(
 
 @router.post("/signIn-social-token")
 async def google_auth_token_route(
+    request: Request,
     Email: str,
     db: db_dependency
 ):
-    return await google_auth_token(Email, db)
+    return await google_auth_token(Email, db, request)

@@ -14,14 +14,19 @@ from functions.send_mail import send_new_email
 from emailsTemps.custom_email_send import custom_email
 import os
 from functions.getUserLocation import get_location_from_ip
+from .SaveUserLogs import save_login_log
 
 # Load environment variables
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM")
 FRONTEND_URL = os.getenv("FRONTEND_URL")
+# Token expiration settings
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60))  # 1 hour
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))  # 7 days
 
 bcrypt_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_bearer = OAuth2PasswordBearer(tokenUrl="auth/token")
+
 
 def authenticate_user(email: str, password: str, db: db_dependency) -> Optional[Users]:
     """
@@ -55,6 +60,7 @@ def authenticate_user(email: str, password: str, db: db_dependency) -> Optional[
         
     return user
 
+
 def create_access_token(email: str, user_id: int, role: str, expires_delta: timedelta) -> str:
     """
     Create JWT access token.
@@ -73,6 +79,17 @@ def create_access_token(email: str, user_id: int, role: str, expires_delta: time
         "id": user_id,
         "role": role,
         "provider": AuthProvider.LOCAL.value,  # Include provider in token
+        "exp": datetime.utcnow() + expires_delta
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+def create_refresh_token(email: str, user_id: int, expires_delta: timedelta) -> str:
+    """
+    Create a refresh token. Contains minimal info.
+    """
+    payload = {
+        "sub": email,
+        "id": user_id,
         "exp": datetime.utcnow() + expires_delta
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
@@ -149,12 +166,45 @@ async def login_for_access_token(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Account is inactive. Please contact support.",
             )
+        if not user.is_verified:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account is Not Verified. Please Verify Before Login.",
+            )
+        
+        # Get client information for login log
+        ip_address = request.client.host if request.client else None
+        device_info = request.headers.get("User-Agent", "Unknown device")
+        
+        # Check if device limit is exceeded (with error handling)
+        try:
+            device_limit_exceeded = save_login_log(
+                db=db,
+                user_id=user.id,
+                ip_address=ip_address,
+                device_info=device_info
+            )
+        except Exception as e:
+            # Log the error but allow login to proceed
+            print(f"Warning: Failed to save login log: {str(e)}")
+            device_limit_exceeded = False
+        
+        if device_limit_exceeded:
+            raise HTTPException(
+                status_code=status.HTTP_406_NOT_ACCEPTABLE,
+                detail="Multiple device login detected. Check your email for instructions to manage your devices."
+            )
         
         token = create_access_token(
             email=user.email,
             user_id=user.id,
             role=user.role.value,
-            expires_delta=timedelta(minutes=60 * 24 * 30)  # 30 days
+            expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        )
+        refresh_token = create_refresh_token(
+            email=user.email,
+            user_id=user.id,
+            expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
         )
         
         try:
@@ -167,6 +217,7 @@ async def login_for_access_token(
         
         return {
             "access_token": token,
+            "refresh_token": refresh_token,
             "token_type": "bearer",
             "encrypted_data": encrypted_data
         }
@@ -174,11 +225,11 @@ async def login_for_access_token(
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
+        print(f"Unexpected error during login: {str(e)}")  # Add this for debugging
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An error occurred during login: {str(e)}"
         )
-
 async def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]) -> dict:
     """
     Get current authenticated user from JWT token.

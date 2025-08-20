@@ -72,3 +72,16 @@ class PasswordResetToken(Base):
     token = Column(String, unique=True, index=True)
     expires_at = Column(DateTime)
     is_used = Column(Boolean, default=False)
+    
+class LoginLogs(Base):
+    __tablename__ = "logs_activity"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
+    login_time = Column(DateTime, default=datetime.utcnow)
+    ip_address = Column(String(45), nullable=True)       # IPv4/IPv6
+    country = Column(String(100), nullable=True)         # e.g., Rwanda, USA
+    location = Column(String(255), nullable=True)        # city or region
+    device_info = Column(String(255), nullable=True)     # e.g., Chrome on Windows
+    device_active = Column(Boolean, default=True)
+

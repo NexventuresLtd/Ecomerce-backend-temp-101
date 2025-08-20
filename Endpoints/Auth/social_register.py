@@ -8,7 +8,7 @@ from passlib.context import CryptContext
 from functions.send_mail import send_new_email
 from emailsTemps.custom_email_send import custom_email
 from functions.encrpt import encrypt_any_data
-from .normal_login import create_access_token
+from .normal_login import create_access_token,create_refresh_token,REFRESH_TOKEN_EXPIRE_DAYS
 from schemas.RegisterResponse import AuthProvider_validator
 
 bcrypt_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -103,9 +103,19 @@ def _generate_auth_response(user: Users):
         user.email,
         user.id,
         user.role.value,
-        timedelta(minutes=60 * 24 * 30),
+        timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+    refresh_token = create_refresh_token(
+        email=user.email,
+        user_id=user.id,
+        expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     )
     user_info = ReturnUser.from_orm(user).dict()
     dat = {"UserInfo": user_info}
-    data = encrypt_any_data(dat)  # Uncomment if encryption is needed
-    return {"access_token": token, "token_type": "bearer", "encrypted_data": data}
+    encrypted_data = encrypt_any_data(dat)  # Uncomment if encryption is needed
+    return {
+        "access_token": token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "encrypted_data": encrypted_data
+    }
