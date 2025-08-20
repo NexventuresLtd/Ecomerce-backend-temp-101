@@ -26,10 +26,10 @@ class Users(Base):
     id = Column(Integer, primary_key=True, index=True)
 
     # Basic Info
-    fname = Column(String(50), nullable=True, default="")
-    lname = Column(String(50), nullable=True, default="")
-    email = Column(String(120), unique=True, index=True, nullable=True)
-    phone = Column(String(20), unique=True, index=True, nullable=True)
+    fname = Column(String(250), nullable=True, default="")
+    lname = Column(String(250), nullable=True, default="")
+    email = Column(String(220), unique=True, index=True, nullable=True)
+    phone = Column(String(250), unique=True, index=True, nullable=True)
     profile_pic = Column(Text, nullable=True)
 
     # Authentication
