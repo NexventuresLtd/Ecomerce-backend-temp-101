@@ -41,7 +41,7 @@ class Users(Base):
     role = Column(Enum(UserRole), default=UserRole.BUYER, nullable=False)
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)  # email/phone verification
-    two_factor = Column(Boolean, default=False)  # email/phone verification
+    two_factor = Column(Boolean, default=True)  # email/phone verification
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
