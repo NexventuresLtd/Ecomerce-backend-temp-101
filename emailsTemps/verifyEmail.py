@@ -1,3 +1,5 @@
+import os
+FRONTEND_URL_ONLINE = os.getenv("FRONTEND_URL_ONLINE")
 def _verification_template(title: str, message: str, button_text: str, icon: str, color: str) -> str:
     """Reusable Tailwind template for verification responses."""
     return f"""
@@ -16,7 +18,7 @@ def _verification_template(title: str, message: str, button_text: str, icon: str
             </div>
             <h1 class="text-3xl font-bold text-slate-800 mb-4">{title}</h1>
             <p class="text-gray-600 mb-8">{message}</p>
-            <a href="http://localhost:5174/" 
+            <a href="{FRONTEND_URL_ONLINE}" 
                class="inline-block px-8 py-3 rounded-xl bg-slate-800 text-white font-medium shadow hover:bg-slate-700 hover:scale-105 transform transition">
                 {button_text}
             </a>
