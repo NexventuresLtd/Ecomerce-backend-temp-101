@@ -11,6 +11,7 @@ from functions.generateToken import create_access_token
 from emailsTemps.custom_email_send import custom_email
 from jose import JWTError, jwt
 from typing import Optional, List
+import re
 
 # Load environment variables
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -19,6 +20,33 @@ VERIFICATION_SECRET = os.getenv("VERIFICATION_SECRET")
 FRONTEND_VERIFICATION_URL = os.getenv("FRONTEND_VERIFICATION_URL")
 FRONTEND_URL = os.getenv("FRONTEND_URL")
 MAX_DEVICES = os.getenv("MAX_DEVICES")
+
+
+def extract_browser_info(user_agent: str) -> str:
+    """Extract browser and OS information from User-Agent string"""
+    try:
+        # Extract browser name and version
+        browser_match = re.search(r'(Chrome|Firefox|Safari|Edge|Opera)[/\s](\d+\.\d+)', user_agent)
+        browser_info = browser_match.group(0) if browser_match else "Unknown Browser"
+        
+        # Extract OS information
+        os_match = re.search(r'(Windows NT|Linux|Mac OS X|iPhone|Android)', user_agent)
+        os_info = os_match.group(1) if os_match else "Unknown OS"
+        
+        return f"{browser_info} on {os_info}"
+    except:
+        return user_agent  # Fallback to original if parsing fails
+
+def generate_device_fingerprint(device_info: str, ip_address: Optional[str] = None) -> str:
+    """Generate a device fingerprint based on browser/device characteristics"""
+    # Extract key device characteristics
+    browser_os = extract_browser_info(device_info)
+    
+    # Create a fingerprint based on device characteristics (not IP)
+    # This helps identify the same device even if IP changes
+    fingerprint = f"device:{browser_os}"
+    
+    return fingerprint
 
 def save_login_log(
     db: Session,
@@ -30,31 +58,50 @@ def save_login_log(
 ) -> bool:
     """
     Save user login activity into logs_activity table and check device limits.
-    If the same device (device_info + IP) already exists, update its login time.
+    Uses device fingerprinting to identify same device across different networks.
     If user exceeds device limit (2+ unique devices), send notification email.
     
     Returns:
         bool: True if device limit was exceeded, False otherwise
     """
     try:
-        # First check if the same device already exists for this user
+        # Generate device fingerprint (based on device characteristics, not IP)
+        device_fingerprint = generate_device_fingerprint(device_info, ip_address)
+        print(f"Device fingerprint for user {user_id}: {device_fingerprint}")
+        
+        # First check if the same device (based on fingerprint) already exists for this user
         existing_log = db.query(LoginLogs).filter(
             LoginLogs.user_id == user_id,
-            LoginLogs.device_info == device_info,
-            LoginLogs.ip_address == ip_address,
+            LoginLogs.device_info == device_info,  # Keep exact match for backward compatibility
             LoginLogs.device_active == True
         ).first()
+        
+        # If not found by exact match, try to find similar devices using the fingerprint
+        if not existing_log:
+            # Look for devices with similar characteristics (same browser/OS combo)
+            all_user_logs = db.query(LoginLogs).filter(
+                LoginLogs.user_id == user_id,
+                LoginLogs.device_active == True
+            ).all()
+            
+            for log in all_user_logs:
+                if log.device_info:
+                    log_fingerprint = generate_device_fingerprint(log.device_info, log.ip_address)
+                    if log_fingerprint == device_fingerprint:
+                        existing_log = log
+                        break
         
         is_existing_device = False
         
         if existing_log:
-            # Update the login time for the existing device (same device login)
+            # Update the login time and IP for the existing device (same device, different network)
             existing_log.login_time = datetime.utcnow()
+            existing_log.ip_address = ip_address or existing_log.ip_address
             existing_log.country = country or existing_log.country
             existing_log.location = location or existing_log.location
             db.commit()
             is_existing_device = True
-            print(f"Updated existing device login for user {user_id}: {device_info} - {ip_address}")
+            print(f"Updated existing device login for user {user_id}: {device_fingerprint} (IP: {ip_address})")
         else:
             # Create a new log entry (new device login)
             new_log = LoginLogs(
@@ -69,7 +116,7 @@ def save_login_log(
             db.add(new_log)
             db.commit()
             db.refresh(new_log)
-            print(f"Created new device login for user {user_id}: {device_info} - {ip_address}")
+            print(f"Created new device login for user {user_id}: {device_fingerprint} (IP: {ip_address})")
         
         # Now check if user has exceeded device limit (only count active devices)
         active_logs = db.query(LoginLogs).filter(
@@ -78,18 +125,21 @@ def save_login_log(
             LoginLogs.login_time >= datetime.utcnow() - timedelta(days=30)
         ).all()
         
-        # Count unique active devices based on device_info and IP combination
+        # Count unique active devices based on device fingerprint (not IP)
         device_combinations = set()
         for log in active_logs:
-            if log.device_info and log.ip_address:
-                device_combinations.add(f"{log.device_info}-{log.ip_address}")
+            if log.device_info:
+                fingerprint = generate_device_fingerprint(log.device_info, log.ip_address)
+                device_combinations.add(fingerprint)
         
-        print(f"User {user_id} has {len(device_combinations)} unique active devices: {list(device_combinations)}")
+        print(f"User {user_id} has {len(device_combinations)} unique active devices based on fingerprint")
+        for i, device in enumerate(device_combinations, 1):
+            print(f"  {i}. {device}")
         
         # Ensure MAX_DEVICES is an integer for comparison
-        max_devices_int = int(MAX_DEVICES)  # Convert to integer
+        max_devices_int = int(MAX_DEVICES)
         
-        # Check if user exceeds device limit (only count active devices)
+        # Check if user exceeds device limit
         device_limit_exceeded = len(device_combinations) > max_devices_int
         
         print(f"Device limit check: {len(device_combinations)} > {max_devices_int} = {device_limit_exceeded}")
@@ -149,8 +199,8 @@ def deactivate_login_logs(db: Session, user_id: int, keep_recent: bool = True):
         if recent_log:
             # Deactivate all logs except the most recent one
             db.query(LoginLogs).filter(
-                LoginLogs.user_id == user_id
-                # LoginLogs.id != recent_log.id
+                LoginLogs.user_id == user_id,
+                LoginLogs.id != recent_log.id
             ).update({"device_active": False})
         else:
             # If no logs found, deactivate all
@@ -245,17 +295,17 @@ clear_logs_template = """
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                         </svg>
-                        Deactivate All Other Sessions
+                        Deactivate All Other Sessions leave the lastest
                     </button>
                 </div>
                 
-                <div class="hidden">
+                <div class="">
                     <button type="submit" name="action" value="reset" 
                         class="w-full bg-red-600 hover:bg-red-700 text-white font-medium py-3 px-4 rounded-lg transition duration-200 flex items-center justify-center">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                         </svg>
-                        Reset Password & Deactivate All
+                        Deactivate All
                     </button>
                 </div>
             </form>
