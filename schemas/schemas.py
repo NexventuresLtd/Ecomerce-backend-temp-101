@@ -24,16 +24,6 @@ class CreateUserRequest(BaseModel):
             raise ValueError('Phone number must be 10-15 digits with optional country code')
         return v
     
-    @validator('password')
-    def validate_password(cls, v):
-        """Validate password strength"""
-        if len(v) < 8:
-            raise ValueError('Password must be at least 8 characters')
-        if not any(c.isupper() for c in v):
-            raise ValueError('Password must contain at least one uppercase letter')
-        if not any(c.isdigit() for c in v):
-            raise ValueError('Password must contain at least one digit')
-        return v
     
     class Config:
         json_schema_extra = {
