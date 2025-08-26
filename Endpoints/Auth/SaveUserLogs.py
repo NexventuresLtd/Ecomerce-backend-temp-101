@@ -1,17 +1,20 @@
 from datetime import datetime, timedelta
-from fastapi import HTTPException, Request, Form, Depends
+from fastapi import HTTPException, Request, Form, Depends, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import and_, func, distinct
 import os
 from db.connection import db_dependency
-from models.userModels import LoginLogs,Users
+from models.userModels import LoginLogs, Users
 from functions.send_mail import send_new_email
 from functions.generateToken import create_access_token
 from emailsTemps.custom_email_send import custom_email
 from jose import JWTError, jwt
 from typing import Optional, List
 import re
+import time
+from functools import lru_cache
+import asyncio
 
 # Load environment variables
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -19,34 +22,67 @@ ALGORITHM = os.getenv("ALGORITHM")
 VERIFICATION_SECRET = os.getenv("VERIFICATION_SECRET")
 FRONTEND_VERIFICATION_URL = os.getenv("FRONTEND_VERIFICATION_URL")
 FRONTEND_URL = os.getenv("FRONTEND_URL")
-MAX_DEVICES = os.getenv("MAX_DEVICES")
+MAX_DEVICES = int(os.getenv("MAX_DEVICES", 2))  # Convert to int once
 
+# Pre-compile regex patterns for better performance
+BROWSER_PATTERN = re.compile(r'(Chrome|Firefox|Safari|Edge|Opera)[/\s](\d+\.\d+)')
+OS_PATTERN = re.compile(r'(Windows NT|Linux|Mac OS X|iPhone|Android)')
 
+@lru_cache(maxsize=1000)
 def extract_browser_info(user_agent: str) -> str:
-    """Extract browser and OS information from User-Agent string"""
+    """Cached browser and OS extraction from User-Agent string"""
     try:
-        # Extract browser name and version
-        browser_match = re.search(r'(Chrome|Firefox|Safari|Edge|Opera)[/\s](\d+\.\d+)', user_agent)
+        browser_match = BROWSER_PATTERN.search(user_agent)
         browser_info = browser_match.group(0) if browser_match else "Unknown Browser"
         
-        # Extract OS information
-        os_match = re.search(r'(Windows NT|Linux|Mac OS X|iPhone|Android)', user_agent)
+        os_match = OS_PATTERN.search(user_agent)
         os_info = os_match.group(1) if os_match else "Unknown OS"
         
         return f"{browser_info} on {os_info}"
     except:
-        return user_agent  # Fallback to original if parsing fails
+        return user_agent
 
 def generate_device_fingerprint(device_info: str, ip_address: Optional[str] = None) -> str:
     """Generate a device fingerprint based on browser/device characteristics"""
-    # Extract key device characteristics
     browser_os = extract_browser_info(device_info)
-    
-    # Create a fingerprint based on device characteristics (not IP)
-    # This helps identify the same device even if IP changes
-    fingerprint = f"device:{browser_os}"
-    
-    return fingerprint
+    return f"device:{browser_os}"
+
+async def send_notification_async(db: Session, user_id: int, device_count: int, max_devices: int):
+    """Async function to send notification email"""
+    try:
+        user = db.query(Users).filter(Users.id == user_id).first()
+        if not user:
+            return
+        
+        clear_token = create_access_token(
+            user_id=str(user_id),
+            expires_delta=timedelta(hours=1),
+            token_type="verification",
+            additional_claims={"action": "clear_logs"}
+        )
+        
+        clear_link = f"{FRONTEND_URL}/clear-devices?token={clear_token}"
+        subject = "Suspicious Login Activity Detected"
+        
+        email_content = custom_email(
+            name=user.fname or user.email,
+            heading="Multiple Device Login Detected",
+            msg=f"""
+            <p>We noticed your account was accessed from {device_count} different devices (max allowed: {max_devices}).</p>
+            <p>If this was you, you can review and manage your active devices:</p>
+            <a href="{clear_link}" style="display: inline-block; margin: 20px 0; padding: 12px 24px; 
+                background-color: #1e293b; color: white; text-decoration: none; border-radius: 4px; 
+                font-weight: bold;">Review Active Devices</a>
+            <p>If you don't recognize this activity, we recommend resetting your password immediately.</p>
+            <p style="color: #64748b; font-size: 14px;">This link expires in 1 hour.</p>
+            """
+        )
+        
+        # Use background task or async email sending
+        await asyncio.to_thread(send_new_email, user.email, subject, email_content)
+        
+    except Exception as e:
+        print(f"Error sending notification: {str(e)}")
 
 def save_login_log(
     db: Session,
@@ -57,170 +93,127 @@ def save_login_log(
     device_info: str = None,
 ) -> bool:
     """
-    Save user login activity into logs_activity table and check device limits.
-    Uses device fingerprinting to identify same device across different networks.
-    If user exceeds device limit (2+ unique devices), send notification email.
-    
-    Returns:
-        bool: True if device limit was exceeded, False otherwise
+    Optimized version: Save user login activity and check device limits.
     """
     try:
-        # Generate device fingerprint (based on device characteristics, not IP)
-        device_fingerprint = generate_device_fingerprint(device_info, ip_address)
-        print(f"Device fingerprint for user {user_id}: {device_fingerprint}")
+        start_time = time.time()
         
-        # First check if the same device (based on fingerprint) already exists for this user
+        device_fingerprint = generate_device_fingerprint(device_info, ip_address)
+        
+        # 1. Check for existing device in single query
         existing_log = db.query(LoginLogs).filter(
             LoginLogs.user_id == user_id,
-            LoginLogs.device_info == device_info,  # Keep exact match for backward compatibility
+            LoginLogs.device_info == device_info,
             LoginLogs.device_active == True
         ).first()
-        
-        # If not found by exact match, try to find similar devices using the fingerprint
-        if not existing_log:
-            # Look for devices with similar characteristics (same browser/OS combo)
-            all_user_logs = db.query(LoginLogs).filter(
-                LoginLogs.user_id == user_id,
-                LoginLogs.device_active == True
-            ).all()
-            
-            for log in all_user_logs:
-                if log.device_info:
-                    log_fingerprint = generate_device_fingerprint(log.device_info, log.ip_address)
-                    if log_fingerprint == device_fingerprint:
-                        existing_log = log
-                        break
-        
+
         is_existing_device = False
         
         if existing_log:
-            # Update the login time and IP for the existing device (same device, different network)
+            # Update existing log
             existing_log.login_time = datetime.utcnow()
             existing_log.ip_address = ip_address or existing_log.ip_address
             existing_log.country = country or existing_log.country
             existing_log.location = location or existing_log.location
-            db.commit()
             is_existing_device = True
-            print(f"Updated existing device login for user {user_id}: {device_fingerprint} (IP: {ip_address})")
         else:
-            # Create a new log entry (new device login)
-            new_log = LoginLogs(
-                user_id=user_id,
-                login_time=datetime.utcnow(),
-                ip_address=ip_address,
-                country=country,
-                location=location,
-                device_info=device_info,
-                device_active=True,
-            )
-            db.add(new_log)
-            db.commit()
-            db.refresh(new_log)
-            print(f"Created new device login for user {user_id}: {device_fingerprint} (IP: {ip_address})")
+            # Check for similar devices using fingerprint (optional, can be removed if not needed)
+            similar_device = db.query(LoginLogs).filter(
+                LoginLogs.user_id == user_id,
+                LoginLogs.device_active == True,
+                LoginLogs.device_info.ilike(f"%{extract_browser_info(device_info).split(' on ')[0]}%")
+            ).first()
+            
+            if similar_device:
+                # Update the similar device
+                similar_device.login_time = datetime.utcnow()
+                similar_device.ip_address = ip_address
+                similar_device.country = country
+                similar_device.location = location
+                similar_device.device_info = device_info  # Update with current device info
+                is_existing_device = True
+            else:
+                # Create new log entry
+                new_log = LoginLogs(
+                    user_id=user_id,
+                    login_time=datetime.utcnow(),
+                    ip_address=ip_address,
+                    country=country,
+                    location=location,
+                    device_info=device_info,
+                    device_active=True,
+                )
+                db.add(new_log)
         
-        # Now check if user has exceeded device limit (only count active devices)
-        active_logs = db.query(LoginLogs).filter(
+        db.commit()
+        
+        # 2. Count unique active devices using optimized database query
+        unique_devices_count = db.query(
+            func.count(distinct(LoginLogs.device_info))
+        ).filter(
             LoginLogs.user_id == user_id,
             LoginLogs.device_active == True,
             LoginLogs.login_time >= datetime.utcnow() - timedelta(days=30)
-        ).all()
+        ).scalar()  # Returns a single count value
         
-        # Count unique active devices based on device fingerprint (not IP)
-        device_combinations = set()
-        for log in active_logs:
-            if log.device_info:
-                fingerprint = generate_device_fingerprint(log.device_info, log.ip_address)
-                device_combinations.add(fingerprint)
+        device_limit_exceeded = unique_devices_count > MAX_DEVICES
         
-        print(f"User {user_id} has {len(device_combinations)} unique active devices based on fingerprint")
-        for i, device in enumerate(device_combinations, 1):
-            print(f"  {i}. {device}")
-        
-        # Ensure MAX_DEVICES is an integer for comparison
-        max_devices_int = int(MAX_DEVICES)
-        
-        # Check if user exceeds device limit
-        device_limit_exceeded = len(device_combinations) > max_devices_int
-        
-        print(f"Device limit check: {len(device_combinations)} > {max_devices_int} = {device_limit_exceeded}")
-        
-        # If user exceeds device limit, send notification
+        # 3. Only send email if limit exceeded (async)
         if device_limit_exceeded:
-            user = db.query(Users).filter(Users.id == user_id).first()
-            if user:
-                # Create a secure token for device management
-                clear_token = create_access_token(
-                    user_id=str(user_id),
-                    expires_delta=timedelta(hours=1),
-                    token_type="verification",
-                    additional_claims={"action": "clear_logs"}
-                )
-                
-                clear_link = f"{FRONTEND_URL}/clear-devices?token={clear_token}"
-                subject = "Suspicious Login Activity Detected"
-                
-                email_content = custom_email(
-                    name=user.fname or user.email,
-                    heading="Multiple Device Login Detected",
-                    msg=f"""
-                    <p>We noticed your account was accessed from {len(device_combinations)} different devices (max allowed: {max_devices_int}).</p>
-                    <p>If this was you, you can review and manage your active devices:</p>
-                    <a href="{clear_link}" style="display: inline-block; margin: 20px 0; padding: 12px 24px; 
-                        background-color: #1e293b; color: white; text-decoration: none; border-radius: 4px; 
-                        font-weight: bold;">Review Active Devices</a>
-                    <p>If you don't recognize this activity, we recommend resetting your password immediately.</p>
-                    <p style="color: #64748b; font-size: 14px;">This link expires in 1 hour.</p>
-                    """
-                )
-                
-                send_new_email(
-                    user.email,
-                    subject,
-                    email_content
-                )
-                print(f"Device limit exceeded notification sent to user {user_id}")
+            # Use asyncio to run email sending in background
+            asyncio.create_task(send_notification_async(db, user_id, unique_devices_count, MAX_DEVICES))
+        
+        end_time = time.time()
+        print(f"save_login_log completed in {end_time - start_time:.3f}s, devices: {unique_devices_count}")
         
         return device_limit_exceeded
         
     except Exception as e:
-        # Log the error but don't break the login process
         print(f"Error in save_login_log: {str(e)}")
-        # Return False to allow login to proceed even if logging fails
+        db.rollback()
         return False
 
 def deactivate_login_logs(db: Session, user_id: int, keep_recent: bool = True):
-    """Deactivate all login logs for a user except optionally the most recent one"""
-    if keep_recent:
-        # Get the most recent log to keep active
-        recent_log = db.query(LoginLogs).filter(
-            LoginLogs.user_id == user_id
-        ).order_by(LoginLogs.login_time.desc()).first()
-        
-        if recent_log:
-            # Deactivate all logs except the most recent one
-            db.query(LoginLogs).filter(
-                LoginLogs.user_id == user_id,
-                LoginLogs.id != recent_log.id
-            ).update({"device_active": False})
+    """Optimized deactivation of login logs"""
+    try:
+        if keep_recent:
+            # Get the most recent log ID in a single query
+            recent_log_id = db.query(LoginLogs.id).filter(
+                LoginLogs.user_id == user_id
+            ).order_by(LoginLogs.login_time.desc()).limit(1).scalar()
+            
+            if recent_log_id:
+                # Bulk update all except the most recent
+                db.query(LoginLogs).filter(
+                    LoginLogs.user_id == user_id,
+                    LoginLogs.id != recent_log_id
+                ).update({"device_active": False}, synchronize_session=False)
+            else:
+                db.query(LoginLogs).filter(
+                    LoginLogs.user_id == user_id
+                ).update({"device_active": False}, synchronize_session=False)
         else:
-            # If no logs found, deactivate all
-            db.query(LoginLogs).filter(LoginLogs.user_id == user_id).update({"device_active": False})
-    else:
-        # Deactivate all logs
-        db.query(LoginLogs).filter(LoginLogs.user_id == user_id).update({"device_active": False})
-    
-    db.commit()
-    return True
+            # Bulk deactivate all logs
+            db.query(LoginLogs).filter(
+                LoginLogs.user_id == user_id
+            ).update({"device_active": False}, synchronize_session=False)
+        
+        db.commit()
+        return True
+        
+    except Exception as e:
+        db.rollback()
+        print(f"Error in deactivate_login_logs: {str(e)}")
+        return False
 
-
-def get_user_login_history(db: Session, user_id: int, active_only: bool = False):
-    """Get user login history, optionally filtering for active devices only"""
+def get_user_login_history(db: Session, user_id: int, active_only: bool = False, limit: int = 50):
+    """Get user login history with limits and optimized query"""
     query = db.query(LoginLogs).filter(LoginLogs.user_id == user_id)
     
     if active_only:
         query = query.filter(LoginLogs.device_active == True)
     
-    return query.order_by(LoginLogs.login_time.desc()).all()
+    return query.order_by(LoginLogs.login_time.desc()).limit(limit).all()
 
 def verify_clear_token(token: str):
     """Verify the clear logs token"""
@@ -241,7 +234,7 @@ def generate_password_reset_token(user_id: int):
         additional_claims={"action": "reset_password"}
     )
 
-# HTML Templates
+# HTML Templates (unchanged, but consider moving to separate files)
 clear_logs_template = """
 <!DOCTYPE html>
 <html lang="en">
@@ -429,12 +422,12 @@ email_sent_template = """
     <title>Check Your Email - Security Center</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-slate-800 min-h-screen flex items-center justify-center p-4">
+<body class="bg-slate-800 min极-screen flex items-center justify-center p-4">
     <div class="bg-white rounded-xl shadow-2xl p-6 md:p-8 max-w-md w-full">
         <div class="text-center">
             <div class="inline-flex items-center justify-center w-16 h-16 bg-blue-100 rounded-full mb-4">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-blue-600极" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V极a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                 </svg>
             </div>
             <h2 class="text-xl font-bold text-slate-800 mt-4">Check Your Email</h2>
@@ -447,11 +440,9 @@ email_sent_template = """
 
 async def clear_logs_endpoint(request: Request, token: str, db: db_dependency):
     """Endpoint for clearing login logs and optional password reset"""
-    # Verify token
     try:
         user_id = verify_clear_token(token)
     except HTTPException:
-        # Return error page if token is invalid
         error_html = """
         <!DOCTYPE html>
         <html lang="en">
@@ -462,7 +453,7 @@ async def clear_logs_endpoint(request: Request, token: str, db: db_dependency):
             <script src="https://cdn.tailwindcss.com"></script>
         </head>
         <body class="bg-slate-800 min-h-screen flex items-center justify-center p-4">
-            <div class="bg-white rounded-xl shadow-2xl p-6 md:p-8 max-w-md w-full">
+            <div class="bg-white rounded-xl shadow-2xl p-6 md:p-8极 max-w-md w-full">
                 <div class="text-center">
                     <div class="inline-flex items-center justify-center w-16 h-16 bg-red-100 rounded-full mb-4">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -475,24 +466,21 @@ async def clear_logs_endpoint(request: Request, token: str, db: db_dependency):
                         Return to Login
                     </a>
                 </div>
-            </div>
+            </极>
         </body>
         </html>
         """
         return HTMLResponse(error_html)
     
     if request.method == "GET":
-        # Render the device management page with the token
         html_content = clear_logs_template.replace("{{token}}", token)
         return HTMLResponse(html_content)
     
-    # Handle POST request
     form_data = await request.form()
     action = form_data.get("action")
     
     if action == "clear":
         deactivate_login_logs(db, user_id, keep_recent=True)
-        # Return success response
         success_html = success_template.format(
             message="All other login sessions have been deactivated successfully.",
             login_url=f"{FRONTEND_URL}/login"
@@ -501,10 +489,8 @@ async def clear_logs_endpoint(request: Request, token: str, db: db_dependency):
     
     elif action == "reset":
         deactivate_login_logs(db, user_id, keep_recent=False)
-        # Generate password reset token
         reset_token = generate_password_reset_token(user_id)
         
-        # Send password reset email
         user = db.query(Users).filter(Users.id == user_id).first()
         if user:
             reset_link = f"{FRONTEND_URL}/reset-password?token={reset_token}"
@@ -522,23 +508,20 @@ async def clear_logs_endpoint(request: Request, token: str, db: db_dependency):
                 """
             )
             
-            send_new_email(users.email, subject, email_content)
+            # Send email asynchronously
+            asyncio.create_task(asyncio.to_thread(send_new_email, user.email, subject, email_content))
         
-        # Return email sent response
         return HTMLResponse(email_sent_template)
     
-    # Default response if no action matches
     html_content = clear_logs_template.replace("{{token}}", token)
     return HTMLResponse(html_content)
 
-# API endpoint to get device history
 async def get_device_history(request: Request, token: str, db: db_dependency):
-    """API endpoint to get user's device login history"""
+    """API endpoint to get user's device login history with limits"""
     try:
         user_id = verify_clear_token(token)
-        devices = get_user_login_history(db, user_id)
+        devices = get_user_login_history(db, user_id, limit=50)
         
-        # Convert devices to JSON-serializable format
         device_list = []
         for device in devices:
             device_list.append({

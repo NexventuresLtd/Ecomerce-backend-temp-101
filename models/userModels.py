@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Enum, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Enum, ForeignKey,Index
 from sqlalchemy.orm import relationship
 from db.database import Base
 from datetime import datetime
@@ -75,6 +75,15 @@ class PasswordResetToken(Base):
     
 class LoginLogs(Base):
     __tablename__ = "logs_activity"
+
+    # Add index definitions to the table arguments
+    __table_args__ = (
+        Index('idx_logs_activity_user_id', 'user_id'),
+        Index('idx_logs_activity_device_active', 'device_active'),
+        Index('idx_logs_activity_login_time', 'login_time'),
+        Index('idx_logs_activity_user_device', 'user_id', 'device_info'),
+        Index('idx_logs_activity_user_active_time', 'user_id', 'device_active', 'login_time'),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))

@@ -208,7 +208,7 @@ async def login_for_access_token(
         )
         
         try:
-            await send_login_alert_email(user, request)
+            send_login_alert_email(user, request)
         except Exception as e:
             print(f"Failed to send login alert email: {str(e)}")
         
