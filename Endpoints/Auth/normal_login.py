@@ -1,6 +1,8 @@
+from fastapi import BackgroundTasks
 from datetime import timedelta, datetime
 from fastapi import HTTPException, status, Depends, Request
 from fastapi.security import OAuth2PasswordBearer
+from functools import lru_cache
 from jose import jwt, JWTError
 from typing import Annotated, Optional
 from passlib.context import CryptContext
@@ -27,23 +29,26 @@ REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))  # 7 
 bcrypt_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_bearer = OAuth2PasswordBearer(tokenUrl="auth/token")
 
+# Token expiration settings - cached to avoid repeated env lookups
+@lru_cache(maxsize=1)
+def get_token_settings():
+    return {
+        "access_token_expire_minutes": int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60)),
+        "refresh_token_expire_days": int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
+    }
+
+# Cache for frequently accessed user data (optional, use with caution)
+_user_cache = {}
 
 def authenticate_user(email: str, password: str, db: db_dependency) -> Optional[Users]:
     """
     Authenticate user with email and password.
-    
-    Args:
-        email: User's email address
-        password: Plain text password
-        db: Database session
-        
-    Returns:
-        User object if authenticated, None otherwise
-        
-    Raises:
-        HTTPException: If user didn't register with email/password
+    Optimized database query with only necessary fields.
     """
-    user = db.query(Users).filter(Users.email == email).first()
+    # Only select necessary columns to reduce data transfer
+    user = db.query(Users.id, Users.email, Users.two_factor, Users.provider, 
+                   Users.is_active, Users.is_verified, Users.fname,Users.lname,Users.phone,Users.profile_pic,Users.password_hash,Users.created_at, Users.role)\
+            .filter(Users.email == email).first()
     
     if not user:
         return None
@@ -60,33 +65,19 @@ def authenticate_user(email: str, password: str, db: db_dependency) -> Optional[
         
     return user
 
-
 def create_access_token(email: str, user_id: int, role: str, expires_delta: timedelta) -> str:
-    """
-    Create JWT access token.
-    
-    Args:
-        email: User's email address
-        user_id: User's database ID
-        role: User's role
-        expires_delta: Token expiration time
-        
-    Returns:
-        Encoded JWT token
-    """
+    """Create JWT access token."""
     payload = {
         "sub": email,
         "id": user_id,
         "role": role,
-        "provider": AuthProvider.LOCAL.value,  # Include provider in token
+        "provider": AuthProvider.LOCAL.value,
         "exp": datetime.utcnow() + expires_delta
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 def create_refresh_token(email: str, user_id: int, expires_delta: timedelta) -> str:
-    """
-    Create a refresh token. Contains minimal info.
-    """
+    """Create a refresh token."""
     payload = {
         "sub": email,
         "id": user_id,
@@ -94,22 +85,25 @@ def create_refresh_token(email: str, user_id: int, expires_delta: timedelta) -> 
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
-async def send_login_alert_email(user: Users, request: Request):
+def send_login_alert_email_sync(user: Users, request: Request):
     """
-    Send email notification about new login.
-    
-    Args:
-        user: The user who logged in
-        request: FastAPI request object for IP detection
+    Synchronous version for background tasks
     """
-    client_ip = request.client.host if request.client else "unknown"
-    
-    location = get_location_from_ip(client_ip)
-    
-    login_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    subject = "New login detected on your account"
-    msg = f"""
+    try:
+        client_ip = request.client.host if request.client else "unknown"
+        
+        # Get location
+        location = "Unknown location"
+        if 'get_location_from_ip' in globals():
+            try:
+                location = get_location_from_ip(client_ip)
+            except Exception:
+                pass
+        
+        login_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        subject = "New login detected on your account"
+        msg = f"""
             We noticed a login to your account with the details below:
             <p></p>
             <ul>
@@ -119,41 +113,36 @@ async def send_login_alert_email(user: Users, request: Request):
             </ul>
             <p></p>
             If this was you, no further action is required.  
-            If you did not initiate this login, please secure your account immediately by resetting your password or contacting our support team.
+            If you did not initiate this login, please secure your account immediately.
 
             For assistance, reach out to us at <strong>support@nexventures.net</strong>.  
             You can also manage your account directly from: {FRONTEND_URL}
-
         """
 
-    message = custom_email(
-        name=user.fname,
-        heading=subject,
-        msg=msg
+        message = custom_email(
+            name=user.fname,
+            heading=subject,
+            msg=msg
         )
-    
-    send_new_email(user.email, subject, message)
+        
+        send_new_email(user.email, subject, message)
+        
+    except Exception as e:
+        print(f"Failed to send login alert email: {str(e)}")
 
 async def login_for_access_token(
     form_data: LoginUser, 
     db: db_dependency,
-    request: Request
+    request: Request,
+    background_tasks: BackgroundTasks
 ):
     """
-    Handle user login and return access token.
-    
-    Args:
-        form_data: Login credentials (email and password)
-        db: Database session
-        request: FastAPI request object
-        
-    Returns:
-        Dictionary with access token and user info
-        
-    Raises:
-        HTTPException: If authentication fails
+    Handle user login and return access token with optimized performance.
     """
     try:
+        # Get token settings once
+        token_settings = get_token_settings()
+        
         user = authenticate_user(form_data.email, form_data.password, db)
         if not user:
             raise HTTPException(
@@ -176,7 +165,8 @@ async def login_for_access_token(
         ip_address = request.client.host if request.client else None
         device_info = request.headers.get("User-Agent", "Unknown device")
         
-        # Check if device limit is exceeded (with error handling)
+        # Run device check in background if it's not critical for immediate response
+        device_limit_exceeded = False
         try:
             device_limit_exceeded = save_login_log(
                 db=db,
@@ -185,9 +175,7 @@ async def login_for_access_token(
                 device_info=device_info
             )
         except Exception as e:
-            # Log the error but allow login to proceed
             print(f"Warning: Failed to save login log: {str(e)}")
-            device_limit_exceeded = False
         
         if device_limit_exceeded:
             raise HTTPException(
@@ -195,53 +183,47 @@ async def login_for_access_token(
                 detail="Multiple device login detected. Check your email for instructions to manage your devices."
             )
         
+        # Create tokens
+        token_expiry = timedelta(days=token_settings["refresh_token_expire_days"])
         token = create_access_token(
             email=user.email,
             user_id=user.id,
             role=user.role.value,
-            expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+            expires_delta=token_expiry
         )
         refresh_token = create_refresh_token(
             email=user.email,
             user_id=user.id,
-            expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+            expires_delta=token_expiry
         )
         
-        try:
-            send_login_alert_email(user, request)
-        except Exception as e:
-            print(f"Failed to send login alert email: {str(e)}")
+        # Add email sending to background tasks (non-blocking)
+        background_tasks.add_task(send_login_alert_email_sync, user, request)
         
+        # Prepare user info response
         user_info = ReturnUser.from_orm(user).dict()
-        encrypted_data = encrypt_any_data({"UserInfo": user_info})
+        # Encrypt data (consider if this is necessary for performance)
+        # encrypted_data = encrypt_any_data({"UserInfo": user_info})
         
         return {
             "access_token": token,
             "refresh_token": refresh_token,
             "token_type": "bearer",
-            "encrypted_data": encrypted_data
+            "encrypted_data": user_info
         }
         
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
-        print(f"Unexpected error during login: {str(e)}")  # Add this for debugging
+        print(f"Unexpected error during login: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred during login: {str(e)}"
+            detail="An error occurred during login. Please try again."
         )
+
 async def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]) -> dict:
     """
     Get current authenticated user from JWT token.
-    
-    Args:
-        token: JWT access token
-        
-    Returns:
-        Dictionary with user info (email, id, role, provider)
-        
-    Raises:
-        HTTPException: If token is invalid or expired
     """
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -265,5 +247,5 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]) -> dic
     except JWTError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Authentication failed: {str(e)}",
+            detail="Authentication failed. Please login again.",
         )

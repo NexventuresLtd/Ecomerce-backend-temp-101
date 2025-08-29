@@ -86,11 +86,11 @@ async def google_auth_token(email: str, db: db_dependency, request):
     )
     # Prepare user data response
     user_info = ReturnUser.from_orm(user).dict()
-    encrypted_data = encrypt_any_data({"UserInfo": user_info})
+    # encrypted_data = encrypt_any_data({"UserInfo": user_info})
     
     return {
         "access_token": token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
-        "encrypted_data": encrypted_data
+        "encrypted_data": user_info
     }

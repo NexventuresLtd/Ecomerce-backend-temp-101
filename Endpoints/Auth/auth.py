@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends,HTTPException, Request
+from fastapi import APIRouter, Depends,HTTPException, Request,BackgroundTasks
 from fastapi.responses import HTMLResponse
 from typing import Annotated
 from starlette import status
@@ -52,7 +52,7 @@ async def register_user_route(
     summary="User login",
     description="Authenticate user with email and password",
     status_code=status.HTTP_200_OK,
-    response_model=dict,
+    # response_model=dict,
     responses={
         status.HTTP_200_OK: {"description": "Successfully authenticated"},
         status.HTTP_401_UNAUTHORIZED: {"description": "Invalid credentials"},
@@ -62,7 +62,8 @@ async def register_user_route(
 async def login_route(
     request: Request,
     form_data: LoginUser,
-    db: db_dependency
+    db: db_dependency,
+    background_tasks: BackgroundTasks = BackgroundTasks()
 ):
     """
     Authenticate user and return access token.
@@ -78,7 +79,7 @@ async def login_route(
         - token_type: Bearer token type
         - encrypted_data: Encrypted user information
     """
-    return await login_for_access_token(form_data, db, request)
+    return await login_for_access_token(form_data, db, request,background_tasks)
 
 @router.post("/signUp-social-auth")
 async def social_auth_route(

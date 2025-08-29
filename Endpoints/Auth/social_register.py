@@ -112,10 +112,10 @@ def _generate_auth_response(user: Users):
     )
     user_info = ReturnUser.from_orm(user).dict()
     dat = {"UserInfo": user_info}
-    encrypted_data = encrypt_any_data(dat)  # Uncomment if encryption is needed
+    # encrypted_data = encrypt_any_data(dat)  # Uncomment if encryption is needed
     return {
         "access_token": token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
-        "encrypted_data": encrypted_data
+        "encrypted_data": dat
     }
