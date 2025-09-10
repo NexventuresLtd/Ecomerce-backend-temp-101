@@ -3,18 +3,18 @@ from fastapi.responses import HTMLResponse
 from typing import Annotated
 from starlette import status
 from db.connection import db_dependency
-from schemas.schemas import CreateUserRequest, LoginUser
+from schemas.auth.schemas import CreateUserRequest, LoginUser
 from dotenv import load_dotenv
-from schemas.RegisterResponse import AuthProvider_validator
+from schemas.auth.RegisterResponse import AuthProvider_validator
 import os
 
 
 # Import from divided files
-from .normal_login import login_for_access_token, get_current_user
-from .normal_register import register_user
-from .social_login import google_auth_token
-from .social_register import sign_up_with_google
-from .SaveUserLogs import clear_logs_endpoint,get_device_history
+from Endpoints.Auth.normal_login import login_for_access_token, get_current_user
+from Endpoints.Auth.normal_register import register_user
+from Endpoints.Auth.social_login import google_auth_token
+from Endpoints.Auth.social_register import sign_up_with_google
+from Endpoints.Auth.SaveUserLogs import clear_logs_endpoint,get_device_history
 
 
 

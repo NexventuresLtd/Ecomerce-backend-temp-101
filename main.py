@@ -2,7 +2,8 @@ from enum import Enum
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
-from Endpoints.Auth import auth ,verification, resetPassword ,refreshToken
+from Endpoints.Auth import verification, resetPassword ,refreshToken
+from routes import auth, category,products,search,cart,wishlist
 from Endpoints.two_factor import otp
 from fastapi.responses import HTMLResponse
 # from db.database import Base,engine
@@ -38,6 +39,11 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(wishlist.router)
+app.include_router(cart.router)
+app.include_router(search.router)
+app.include_router(products.router)
+app.include_router(category.router)
 app.include_router(refreshToken.router)
 app.include_router(resetPassword.router)
 app.include_router(verification.router)

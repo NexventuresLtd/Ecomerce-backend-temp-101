@@ -5,7 +5,7 @@ from models.userModels import Users
 from jose import jwt, JWTError
 from datetime import timedelta, datetime
 import os
-from schemas.schemas import Token
+from schemas.auth.schemas import Token
 from functions.generateToken import create_access_token
 from emailsTemps.verifyEmail import _verification_template
 

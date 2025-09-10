@@ -4,7 +4,7 @@ from jose import jwt
 from datetime import timedelta
 from datetime import datetime
 import os
-from schemas.schemas import Token
+from schemas.auth.schemas import Token
 
 VERIFICATION_SECRET = os.getenv("VERIFICATION_SECRET")
 ALGORITHM = os.getenv("ALGORITHM")

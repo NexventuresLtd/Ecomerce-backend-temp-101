@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr
-from typing import List, Literal
+from typing import  Literal
 
 class EmailSchema(BaseModel):
     purpose: Literal["login", "email","reset","Info"]

@@ -6,7 +6,7 @@ from db.connection import db_dependency
 from models.userModels import Users, OTP
 from functions.send_mail import send_new_email
 from emailsTemps.custom_email_send import custom_email
-from schemas.emailSchemas import EmailSchema, OtpVerify
+from schemas.auth.emailSchemas import EmailSchema, OtpVerify
 from datetime import datetime, timedelta
 
 # Load environment variables from .env file

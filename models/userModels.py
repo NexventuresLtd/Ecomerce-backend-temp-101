@@ -47,13 +47,9 @@ class Users(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Relationships (expand later)
-    # products = relationship("Products", back_populates="seller", cascade="all, delete", lazy="dynamic")
-    # orders = relationship("Orders", back_populates="buyer", cascade="all, delete", lazy="dynamic")
-
     def __repr__(self):
         return f"<User(id={self.id}, email={self.email}, role={self.role}, provider={self.provider})>"
-
+    # products = relationship("Product", back_populates="owner")
  
 class OTP(Base):
     __tablename__ = "sent_otps"

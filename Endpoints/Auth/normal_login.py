@@ -9,8 +9,8 @@ from passlib.context import CryptContext
 from db.connection import db_dependency
 from models.userModels import Users, AuthProvider
 from sqlalchemy import or_
-from schemas.schemas import LoginUser
-from schemas.returnLoginSchema import ReturnUser
+from schemas.auth.schemas import LoginUser
+from schemas.auth.returnLoginSchema import ReturnUser
 from functions.encrpt import encrypt_any_data
 from functions.send_mail import send_new_email
 from emailsTemps.custom_email_send import custom_email

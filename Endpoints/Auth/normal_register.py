@@ -1,7 +1,7 @@
 from fastapi import HTTPException, status, Request
 from db.connection import db_dependency
 from models.userModels import Users, UserRole, AuthProvider
-from schemas.schemas import CreateUserRequest, Token
+from schemas.auth.schemas import CreateUserRequest, Token
 from passlib.context import CryptContext
 from functions.send_mail import send_new_email
 from emailsTemps.custom_email_send import custom_email

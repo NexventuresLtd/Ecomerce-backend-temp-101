@@ -2,14 +2,14 @@ from datetime import timedelta
 from fastapi import HTTPException
 from db.connection import db_dependency
 from models.userModels import Users, AuthProvider, UserRole
-from schemas.schemas import CreateUserRequest
-from schemas.returnLoginSchema import ReturnUser
+from schemas.auth.schemas import CreateUserRequest
+from schemas.auth.returnLoginSchema import ReturnUser
 from passlib.context import CryptContext
 from functions.send_mail import send_new_email
 from emailsTemps.custom_email_send import custom_email
 from functions.encrpt import encrypt_any_data
 from .normal_login import create_access_token,create_refresh_token,REFRESH_TOKEN_EXPIRE_DAYS
-from schemas.RegisterResponse import AuthProvider_validator
+from schemas.auth.RegisterResponse import AuthProvider_validator
 
 bcrypt_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 

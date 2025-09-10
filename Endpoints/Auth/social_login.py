@@ -2,8 +2,8 @@ from datetime import timedelta
 from fastapi import HTTPException, status
 from db.connection import db_dependency
 from models.userModels import Users
-from schemas.RegisterResponse import AuthProvider_validator
-from schemas.returnLoginSchema import ReturnUser
+from schemas.auth.RegisterResponse import AuthProvider_validator
+from schemas.auth.returnLoginSchema import ReturnUser
 from functions.encrpt import encrypt_any_data
 from .normal_login import create_access_token,create_refresh_token ,REFRESH_TOKEN_EXPIRE_DAYS
 from .SaveUserLogs import save_login_log
