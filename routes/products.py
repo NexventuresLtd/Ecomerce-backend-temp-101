@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy.orm import selectinload, joinedload
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-
+from db.VerifyToken import user_dependency  
 from db.connection import db_dependency
 from models.Products import Product
 from models.Categories import ProductCategory
@@ -26,6 +26,7 @@ def get_products(
 
 @router.get("/{product_id}", response_model=ProductResponse)
 def get_product(product_id: int, db: db_dependency):
+
     product = db.query(Product).options(
         joinedload(Product.category)
     ).filter(Product.id == product_id).first()
@@ -38,7 +39,13 @@ def get_product(product_id: int, db: db_dependency):
 def create_product(
     db: db_dependency,
     product_data: ProductCreate,
+    user: user_dependency
 ):
+    if isinstance(user, HTTPException):
+        raise user
+    if not user["user_id"]:
+        raise HTTPException(status=401, detail="Not Allowed To Perfom This Action")
+    product_data.owner_id = user["user_id"]
     # Check if category exists if provided
     if product_data.category_id:
         category = db.query(ProductCategory).filter(ProductCategory.id == product_data.category_id).first()
@@ -72,7 +79,10 @@ def update_product(
     db: db_dependency,
     product_id: int, 
     product_data: ProductUpdate, 
+    user: user_dependency
 ):
+    if isinstance(user, HTTPException):
+        raise user
     db_product = db.query(Product).filter(Product.id == product_id).first()
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -111,7 +121,9 @@ def update_product(
     return db_product
 
 @router.delete("/{product_id}")
-def delete_product(product_id: int, db: db_dependency):
+def delete_product(product_id: int, db: db_dependency,user: user_dependency):
+    if isinstance(user, HTTPException):
+        raise user
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -124,11 +136,15 @@ def delete_product(product_id: int, db: db_dependency):
 def set_primary_image(
     product_id: int,
     image_index: int,
-    db: db_dependency
+    db: db_dependency,
+    user: user_dependency
 ):
     """
     Set a specific image as primary by its index in the images array
     """
+    if isinstance(user, HTTPException):
+        raise user
+    
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")

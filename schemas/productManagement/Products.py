@@ -19,8 +19,12 @@ class ProductBase(BaseModel):
     is_active: bool = True
     reviews_count: int = Field(0, ge=0)
     instock: int = Field(0, ge=0)
-    delivery_fee: float = Field(0.0, ge=0)
+    delivery_fee: Optional[str] = None
+    brock: Optional[str] = None
+    returnDay: Optional[str] = None
+    warranty: Optional[str] = None
     hover_image: Optional[str] = None
+    owner_id: Optional[int] = None
     tutorial_video: Optional[str] = None
     tags: List[str] = []
     features: List[str] = []
@@ -38,12 +42,16 @@ class ProductUpdate(BaseModel):
     original_price: Optional[float] = Field(None, gt=0)
     discount: Optional[float] = Field(None, ge=0, le=100)
     rating: Optional[float] = Field(None, ge=0, le=5)
+    warranty: Optional[str] = None
     is_new: Optional[bool] = None
     is_featured: Optional[bool] = None
     is_active: Optional[bool] = None
     reviews_count: Optional[int] = Field(None, ge=0)
     instock: Optional[int] = Field(None, ge=0)
-    delivery_fee: Optional[float] = Field(None, ge=0)
+    delivery_fee: Optional[str] = None
+    brock: Optional[str] = None
+    returnDay: Optional[str] = None
+    owner_id: Optional[int] = None
     hover_image: Optional[str] = None
     tutorial_video: Optional[str] = None
     tags: Optional[List[str]] = None

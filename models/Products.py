@@ -26,7 +26,10 @@ class Product(Base):
 
     reviews_count = Column(Integer, default=0)
     instock = Column(Integer, default=0)
-    delivery_fee = Column(Float, default=0.0)
+    delivery_fee = Column(String, default="")
+    brock = Column(String, default="")
+    returnDay = Column(String, default="")
+    warranty = Column(String, default="")
 
     hover_image = Column(Text, nullable=True)
     tutorial_video = Column(Text, nullable=True)
@@ -55,7 +58,7 @@ class Product(Base):
     category = relationship("ProductCategory")
 
     # Owner (uncomment when User model is ready)
-    # owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    owner_id = Column(Integer, nullable=True)
     # owner = relationship("User", back_populates="products")
 
     created_at = Column(DateTime, default=datetime.utcnow)
