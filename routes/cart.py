@@ -25,6 +25,9 @@ async def add_to_cart(product_id: int, quantity: int, db: db_dependency, user: u
     product = db.query(Product).filter(Product.id == product_id, Product.is_active == True).first()
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found or inactive")
+    if product.instock < quantity:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The Quantity entered is high")
+        
 
     # Ensure the user has an active cart
     cart = db.query(Cart).filter(Cart.user_id == user_id, Cart.is_active == True).first()
@@ -40,6 +43,9 @@ async def add_to_cart(product_id: int, quantity: int, db: db_dependency, user: u
     ).first()
 
     if cart_item:
+        if product.instock < cart_item.quantity + quantity :
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The Quantity entered is high")
+        
         cart_item.quantity += quantity
     else:
         cart_item = CartItem(
@@ -60,17 +66,59 @@ async def view_cart(db: db_dependency, user: user_dependency):
         raise user
 
     """
-    View all items in the logged-in user's active cart.
+    View all items in the logged-in user's active cart with detailed product information.
     """
     user_id = user["user_id"]
 
     cart = db.query(Cart).filter(Cart.user_id == user_id, Cart.is_active == True).first()
     if not cart:
-        return {"cart": []}
+        return {
+            "cart_id": None,
+            "items": [],
+            "total_items": 0,
+            "total_price": 0.0,
+            "message": "No active cart found"
+        }
 
-    items = db.query(CartItem).filter(CartItem.cart_id == cart.id).all()
-    return {"cart_id": cart.id, "items": items}
+    # Get cart items with product details
+    cart_items = (
+        db.query(CartItem, Product)
+        .join(Product, CartItem.product_id == Product.id)
+        .filter(CartItem.cart_id == cart.id)
+        .all()
+    )
 
+    items = []
+    total_items = 0
+    total_price = 0.0
+
+    for cart_item, product in cart_items:
+        item_total = cart_item.quantity * cart_item.price_at_time
+        items.append({
+            "cart_item_id": cart_item.id,
+            "product_id": product.id,
+            "product_name": product.title,
+            "delivery_fee":product.delivery_fee,
+            "product_image": product.images,
+            "current_price": product.price,
+            "price_at_time": cart_item.price_at_time,
+            "quantity": cart_item.quantity,
+            "item_total": item_total,
+            "in_stock": product.instock,
+            "max_available": min(product.instock, product.instock)  # You might want to adjust this
+        })
+        total_items += cart_item.quantity
+        total_price += item_total
+
+    return {
+        "cart_id": cart.id,
+        "user_id": user_id,
+        "items": items,
+        "total_items": total_items,
+        "total_price": total_price,
+        "cart_status": cart.is_active,
+        "created_at": cart.created_at
+    }
 
 @router.put("/update/{cart_item_id}")
 async def update_cart_item(cart_item_id: int, quantity: int, db: db_dependency, user: user_dependency):
@@ -128,11 +176,66 @@ async def get_all_carts(db: db_dependency, user: user_dependency):
         raise user
 
     """
-    Admin: View all carts
+    Admin: View all carts with their items - optimized version
     """
-    # you may want to check user["role"] here to enforce admin-only
+    # Get all carts with user information
     carts = db.query(Cart).all()
-    return {"carts": carts}
+    
+    # Get all cart items in one query
+    all_cart_items = db.query(CartItem).all()
+    
+    # Get all products in one query
+    product_ids = {item.product_id for item in all_cart_items}
+    products = db.query(Product).filter(Product.id.in_(product_ids)).all()
+    product_dict = {product.id: product for product in products}
+    
+    # Get all users in one query
+    user_ids = {cart.user_id for cart in carts}
+    users = db.query(Users).filter(Users.id.in_(user_ids)).all()
+    user_dict = {user.id: user for user in users}
+    
+    result = []
+    for cart in carts:
+        # Filter items for this cart
+        cart_items = [item for item in all_cart_items if item.cart_id == cart.id]
+        
+        user_info = user_dict.get(cart.user_id)
+        
+        cart_data = {
+            "id": cart.id,
+            "user_id": cart.user_id,
+            "fname": user_info.fname,
+            "lname": user_info.lname,
+            "phone":user_info.phone,
+            "email": user_info.email if user_info else None,
+            "is_active": cart.is_active,
+            "created_at": cart.created_at,
+            "items": [],
+            "total_items": 0,
+            "total_price": 0
+        }
+        
+        # Add items to the cart
+        for item in cart_items:
+            product = product_dict.get(item.product_id)
+            
+            item_data = {
+                "id": item.id,
+                "product_id": item.product_id,
+                "product_name": product.title if product else "Product Not Found",
+                "product_price": product.price if product else 0,
+                "quantity": item.quantity,
+                "price_at_time": item.price_at_time,
+                "created_at": item.created_at,
+                "total_item_price": item.quantity * item.price_at_time
+            }
+            cart_data["items"].append(item_data)
+            cart_data["total_items"] += item.quantity
+            cart_data["total_price"] += item.quantity * item.price_at_time
+        
+        result.append(cart_data)
+    
+    return {"carts": result}
 
 
 @router.put("/toggle/{cart_id}")
