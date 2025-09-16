@@ -4,12 +4,13 @@ from db.VerifyToken import user_dependency
 from models.cart_wish import Cart, CartItem
 from models.Products import Product
 from models.userModels import Users
+from typing import List, Dict, Any
 
 router = APIRouter(prefix="/cart", tags=["Cart"])
 
 
 @router.post("/add")
-async def add_to_cart(product_id: int, quantity: int, db: db_dependency, user: user_dependency):
+async def add_to_cart(product_id: int, quantity: int,db: db_dependency,user: user_dependency, delivery:str,color:List[Dict[str, Any]] = []):
     if isinstance(user, HTTPException):
         raise user
 
@@ -47,12 +48,16 @@ async def add_to_cart(product_id: int, quantity: int, db: db_dependency, user: u
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The Quantity entered is high")
         
         cart_item.quantity += quantity
+        cart_item.color = color
+        cart_item.delivery =delivery
     else:
         cart_item = CartItem(
+            color=color,
             cart_id=cart.id,
             product_id=product_id,
             quantity=quantity,
-            price_at_time=product.price
+            price_at_time=product.price,
+            delivery=delivery
         )
         db.add(cart_item)
 
@@ -103,6 +108,9 @@ async def view_cart(db: db_dependency, user: user_dependency):
             "current_price": product.price,
             "price_at_time": cart_item.price_at_time,
             "quantity": cart_item.quantity,
+            "cart_color":cart_item.color,
+            "product_color":product.colors,
+            "delivery":cart_item.delivery,
             "item_total": item_total,
             "in_stock": product.instock,
             "max_available": min(product.instock, product.instock)  # You might want to adjust this
@@ -121,7 +129,7 @@ async def view_cart(db: db_dependency, user: user_dependency):
     }
 
 @router.put("/update/{cart_item_id}")
-async def update_cart_item(cart_item_id: int, quantity: int, db: db_dependency, user: user_dependency):
+async def update_cart_item(cart_item_id: int, quantity: int, db: db_dependency, user: user_dependency,delivery:str,color:List[Dict[str, Any]] = []):
     if isinstance(user, HTTPException):
         raise user
 
@@ -140,6 +148,8 @@ async def update_cart_item(cart_item_id: int, quantity: int, db: db_dependency, 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cart item not found")
 
     cart_item.quantity = quantity
+    cart_item.color = color
+    cart_item.delivery = delivery
     db.commit()
     return {"message": "Cart item updated successfully"}
 
@@ -225,6 +235,9 @@ async def get_all_carts(db: db_dependency, user: user_dependency):
                 "product_name": product.title if product else "Product Not Found",
                 "product_price": product.price if product else 0,
                 "quantity": item.quantity,
+                "cart_color":item.color,
+                "product_color":product.colors,
+                "delivery":item.delivery,
                 "price_at_time": item.price_at_time,
                 "created_at": item.created_at,
                 "total_item_price": item.quantity * item.price_at_time
