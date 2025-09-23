@@ -1,5 +1,4 @@
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Enum, ForeignKey,Index
-from sqlalchemy.orm import relationship
 from db.database import Base
 from datetime import datetime
 import enum
@@ -46,6 +45,7 @@ class Users(Base):
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # billings = relationship("Billing", back_populates="users", cascade="all, delete")
 
     def __repr__(self):
         return f"<User(id={self.id}, email={self.email}, role={self.role}, provider={self.provider})>"

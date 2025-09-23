@@ -3,23 +3,23 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 from Endpoints.Auth import verification, resetPassword ,refreshToken
-from routes import auth, category,products,search,cart,wishlist
+from routes import auth, category,products,search,cart,wishlist,billing,dashboard,vlog
 from Endpoints.two_factor import otp
 from fastapi.responses import HTMLResponse
 # from db.database import Base,engine
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
+from fastapi.staticfiles import StaticFiles
 bearer_scheme = HTTPBearer()
 app = FastAPI(
-    title="Nex Market - Global B2B Marketplace API",
+    title="UMUKAMEZI - Global B2B Marketplace API",
     description="""
-    Nex Market is a global B2B marketplace connecting vendors and buyers worldwide. 
+    UMUKAMEZI is a global B2B marketplace connecting vendors and buyers worldwide. 
     Our platform provides seamless trade solutions with secure transactions, 
     vendor management, and real-time communication tools.
     """,
     version="1.0.0",
     contact={
-        "name": "Nex Market Support",
+        "name": "UMUKAMEZI Support",
         "email": "support@nexventures.net",
     },
     license_info={
@@ -37,8 +37,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+app.mount("/static", StaticFiles(directory="static"), name="static")
 # Include routers
+app.include_router(vlog.router)
+app.include_router(dashboard.router)
+app.include_router(billing.router)
 app.include_router(wishlist.router)
 app.include_router(cart.router)
 app.include_router(search.router)
@@ -63,7 +66,7 @@ async def read_root():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nex Market | Global B2B Marketplace</title>
+    <title>UMUKAMEZI | Global B2B Marketplace</title>
     <!-- Tailwind CSS -->
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
@@ -82,7 +85,7 @@ async def read_root():
 <body class="bg-slate-800 text-gray-100">
     <div class="container mx-auto py-12 px-4">
         <header class="text-center mb-12">
-            <h1 class="text-5xl font-bold mb-4 gradient-text">Nex Market</h1>
+            <h1 class="text-5xl font-bold mb-4 gradient-text">UMUKAMEZI</h1>
             <p class="text-xl text-gray-300">The Global B2B Marketplace Connecting Vendors and Buyers Worldwide</p>
         </header>
 
@@ -91,7 +94,7 @@ async def read_root():
                 <div class="md:w-2/3">
                     <h2 class="text-2xl font-bold text-white mb-4">API Documentation</h2>
                     <p class="text-gray-300 mb-6">
-                        Nex Market provides a comprehensive API for integrating with our global B2B marketplace platform.
+                        UMUKAMEZI provides a comprehensive API for integrating with our global B2B marketplace platform.
                         Our API enables seamless vendor management, product listings, order processing, and secure transactions.
                     </p>
                     

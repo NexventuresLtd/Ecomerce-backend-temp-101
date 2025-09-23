@@ -35,11 +35,25 @@ class Wishlist(Base):
     __tablename__ = "wishlists"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, nullable=True)
+    is_active = Column(Boolean, default=True)
 
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WishlistItem(Base):
+    __tablename__ = "wishlist_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    wishlist_id = Column(Integer, ForeignKey("wishlists.id", ondelete="CASCADE"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
+    quantity = Column(Integer, default=1)
+    color = Column(JSONB, default=list)
+    delivery = Column(String, nullable=True)
+    price_at_time = Column(Float, nullable=False)  # snapshot of product price when added
     created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
-        UniqueConstraint("user_id", "product_id", name="uq_user_product_wishlist"),
+        UniqueConstraint("wishlist_id", "product_id", name="uq_wishlist_product"),
     )
