@@ -1,8 +1,8 @@
-# afiacare_SE_Project
+# Umukamezi Website
 
 ## Overview
 
-This project repository (`afiacare_SE_Project`) is dedicated to the development of a web application aimed at enhancing healthcare management. It utilizes FastAPI for building APIs, SQLAlchemy for database interactions, and Pydantic for data validation.
+This project repository (`Umukamezi Website`) is dedicated to the development of a web application aimed at enhancing healthcare management. It utilizes FastAPI for building APIs, SQLAlchemy for database interactions, and Pydantic for data validation.
 
 ## Structure
 
