@@ -1,5 +1,5 @@
 from enum import Enum
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends,Request
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 from Endpoints.Auth import verification, resetPassword ,refreshToken
@@ -9,6 +9,10 @@ from fastapi.responses import HTMLResponse
 # from db.database import Base,engine
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+import time
+import hashlib
+from fastapi.responses import JSONResponse
 bearer_scheme = HTTPBearer()
 app = FastAPI(
     title="UMUKAMEZI - Global B2B Marketplace API",
@@ -26,8 +30,33 @@ app = FastAPI(
         "name": "Proprietary",
     },
 )
+# In-memory store (for demo, use Redis in production)
+pending_requests = {}
 
+class PreventDuplicateRequestsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Build unique request key
+        body = await request.body()
+        key_raw = f"{request.method}:{request.url.path}:{body.decode()}"
+        key = hashlib.sha256(key_raw.encode()).hexdigest()
 
+        # If duplicate request already being processed
+        if key in pending_requests:
+            return JSONResponse(
+                {"detail": "Duplicate request in progress"},
+                status_code=429
+            )
+
+        # Mark request as pending
+        pending_requests[key] = True
+
+        try:
+            response = await call_next(request)
+            return response
+        finally:
+            # Short TTL to prevent immediate re-entry
+            await asyncio.sleep(0.1)
+            pending_requests.pop(key, None)
 
 # Configure CORS 
 app.add_middleware(
@@ -37,6 +66,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(PreventDuplicateRequestsMiddleware)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 # Include routers
 app.include_router(vlog.router)

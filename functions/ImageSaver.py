@@ -8,8 +8,8 @@ from fastapi import (
 )
 
 # ---------------- CONFIG ----------------
-IMAGE_FOLDER = "./static/images"
-BASE_URL = "/static/images/"
+IMAGE_FOLDER = "./static/products"
+BASE_URL = "/static/products/"
 os.makedirs(IMAGE_FOLDER, exist_ok=True)
 # ---------------- HELPERS ----------------
 def save_uploaded_file(file: UploadFile, item_id: int, index: int) -> str:
