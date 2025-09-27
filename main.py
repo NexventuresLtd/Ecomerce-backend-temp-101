@@ -13,6 +13,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import time
 import hashlib
 from fastapi.responses import JSONResponse
+import asyncio
+
 bearer_scheme = HTTPBearer()
 app = FastAPI(
     title="UMUKAMEZI - Global B2B Marketplace API",
@@ -35,28 +37,28 @@ pending_requests = {}
 
 class PreventDuplicateRequestsMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Build unique request key
+        # Read body safely
         body = await request.body()
+        # Re-insert the body so downstream endpoints can read it
+        async def receive():
+            return {"type": "http.request", "body": body}
+
+        # Build unique request key
         key_raw = f"{request.method}:{request.url.path}:{body.decode()}"
         key = hashlib.sha256(key_raw.encode()).hexdigest()
 
-        # If duplicate request already being processed
         if key in pending_requests:
-            return JSONResponse(
-                {"detail": "Duplicate request in progress"},
-                status_code=429
-            )
+            return JSONResponse({"detail": "Duplicate request in progress"}, status_code=429)
 
-        # Mark request as pending
         pending_requests[key] = True
 
         try:
-            response = await call_next(request)
+            response = await call_next(Request(request.scope, receive))
             return response
         finally:
-            # Short TTL to prevent immediate re-entry
             await asyncio.sleep(0.1)
             pending_requests.pop(key, None)
+
 
 # Configure CORS 
 app.add_middleware(
