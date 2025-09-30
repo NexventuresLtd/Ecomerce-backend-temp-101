@@ -8,6 +8,27 @@ import base64
 import re
 import uuid
 import logging
+from io import BytesIO
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# Try to import image processing libraries
+try:
+    from PIL import Image, ImageOps
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    logger.warning("PIL/Pillow not available. Image compression disabled.")
+
+try:
+    import cv2
+    import numpy as np
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    logger.warning("OpenCV not available. Advanced image compression disabled.")
 
 from db.VerifyToken import user_dependency  
 from db.connection import db_dependency
@@ -24,9 +45,11 @@ PRODUCT_IMAGE_FOLDER = "./static/images/products"
 PRODUCT_BASE_URL = "static/images/products/"
 os.makedirs(PRODUCT_IMAGE_FOLDER, exist_ok=True)
 
-# Set up logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
+# Image optimization settings
+IMAGE_QUALITY = 85  # JPEG quality (0-100)
+MAX_WIDTH = 1200    # Maximum width for images
+MAX_HEIGHT = 1200   # Maximum height for images
+THUMBNAIL_SIZE = (400, 400)  # Thumbnail dimensions
 
 # ---------------- HELPERS ----------------
 def decode_base64(data: str):
@@ -61,19 +84,129 @@ def get_image_extension(data: bytes) -> str:
         # Default to jpg if unknown
         return "jpg"
 
-def save_product_image(product_id: int, image_data: bytes, image_type: str = "main", image_index: int = 0) -> str:
-    """Save product image to file system"""
+def compress_image_pil(image_data: bytes, max_size=(MAX_WIDTH, MAX_HEIGHT), quality=IMAGE_QUALITY) -> bytes:
+    """Compress image using PIL/Pillow"""
+    try:
+        with Image.open(BytesIO(image_data)) as img:
+            # Convert to RGB if necessary (for JPEG)
+            if img.mode in ('RGBA', 'LA', 'P'):
+                img = img.convert('RGB')
+            
+            # Resize if too large
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+            
+            # Save with compression
+            output = BytesIO()
+            img.save(output, format='JPEG', optimize=True, quality=quality, progressive=True)
+            return output.getvalue()
+    except Exception as e:
+        logger.error(f"PIL compression failed: {str(e)}")
+        return image_data  # Return original if compression fails
+
+def compress_image_opencv(image_data: bytes, max_size=(MAX_WIDTH, MAX_HEIGHT), quality=IMAGE_QUALITY) -> bytes:
+    """Compress image using OpenCV (better for photos)"""
+    try:
+        # Convert bytes to numpy array
+        nparr = np.frombuffer(image_data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            return image_data
+        
+        # Get current dimensions
+        height, width = img.shape[:2]
+        
+        # Calculate resize dimensions
+        if width > max_size[0] or height > max_size[1]:
+            ratio = min(max_size[0] / width, max_size[1] / height)
+            new_width = int(width * ratio)
+            new_height = int(height * ratio)
+            img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        
+        # Encode with compression
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+        success, encoded_img = cv2.imencode('.jpg', img, encode_param)
+        
+        if success:
+            return encoded_img.tobytes()
+        else:
+            return image_data
+    except Exception as e:
+        logger.error(f"OpenCV compression failed: {str(e)}")
+        return image_data
+
+def create_thumbnail(image_data: bytes, size=THUMBNAIL_SIZE) -> bytes:
+    """Create a thumbnail version of the image"""
+    try:
+        with Image.open(BytesIO(image_data)) as img:
+            # Convert to RGB if necessary
+            if img.mode in ('RGBA', 'LA', 'P'):
+                img = img.convert('RGB')
+            
+            # Create thumbnail
+            img.thumbnail(size, Image.Resampling.LANCZOS)
+            
+            output = BytesIO()
+            img.save(output, format='JPEG', optimize=True, quality=80)
+            return output.getvalue()
+    except Exception as e:
+        logger.error(f"Thumbnail creation failed: {str(e)}")
+        return image_data
+
+def optimize_image(image_data: bytes, image_type: str = "main") -> bytes:
+    """Optimize image based on available libraries and image type"""
+    original_size = len(image_data)
+    
+    # Choose compression method based on available libraries
+    if CV2_AVAILABLE and image_type == "main":
+        compressed_data = compress_image_opencv(image_data)
+    elif PIL_AVAILABLE:
+        compressed_data = compress_image_pil(image_data)
+    else:
+        compressed_data = image_data  # No compression available
+    
+    compressed_size = len(compressed_data)
+    compression_ratio = (original_size - compressed_size) / original_size * 100
+    
+    logger.info(f"Image compressed: {original_size/1024:.1f}KB -> {compressed_size/1024:.1f}KB ({compression_ratio:.1f}% reduction)")
+    
+    return compressed_data
+
+def save_product_image(product_id: int, image_data: bytes, image_type: str = "main", image_index: int = 0) -> Dict[str, str]:
+    """Save product image to file system with multiple versions"""
     try:
         ext = get_image_extension(image_data)
         unique_id = uuid.uuid4().hex[:8]
-        filename = f"product_{product_id}_{image_type}_{unique_id}.{ext}"
-        filepath = os.path.join(PRODUCT_IMAGE_FOLDER, filename)
         
-        with open(filepath, "wb") as f:
-            f.write(image_data)
+        # Optimize main image
+        optimized_data = optimize_image(image_data, image_type)
         
-        logger.info(f"Image saved: {filename}")
-        return f"{PRODUCT_BASE_URL}{filename}"
+        # Save main image
+        main_filename = f"product_{product_id}_{image_type}_{unique_id}.{ext}"
+        main_filepath = os.path.join(PRODUCT_IMAGE_FOLDER, main_filename)
+        
+        with open(main_filepath, "wb") as f:
+            f.write(optimized_data)
+        
+        # Create and save thumbnail for main images
+        thumbnail_url = None
+        if image_type == "main" and PIL_AVAILABLE:
+            thumbnail_data = create_thumbnail(image_data)
+            thumb_filename = f"product_{product_id}_{image_type}_{unique_id}_thumb.{ext}"
+            thumb_filepath = os.path.join(PRODUCT_IMAGE_FOLDER, thumb_filename)
+            
+            with open(thumb_filepath, "wb") as f:
+                f.write(thumbnail_data)
+            
+            thumbnail_url = f"{PRODUCT_BASE_URL}{thumb_filename}"
+        
+        logger.info(f"Image saved: {main_filename} (thumbnail: {thumbnail_url})")
+        
+        return {
+            "main": f"{PRODUCT_BASE_URL}{main_filename}",
+            "thumbnail": thumbnail_url
+        }
+        
     except Exception as e:
         logger.error(f"Error saving image: {str(e)}")
         raise
@@ -91,9 +224,9 @@ def process_single_image(product_id: int, image_url: str, image_type: str = "hov
             return None
             
         try:
-            saved_url = save_product_image(product_id, image_bytes, image_type)
+            saved_urls = save_product_image(product_id, image_bytes, image_type)
             logger.info(f"Successfully processed {image_type} image")
-            return saved_url
+            return saved_urls["main"]  # Return main URL for single images
         except Exception as e:
             logger.error(f"Error processing {image_type} image: {str(e)}")
             return None
@@ -121,38 +254,54 @@ def process_product_images_from_urls(product_id: int, images_data: List[ProductI
                 continue
                 
             try:
-                image_url = save_product_image(product_id, image_bytes, "main", i)
-                processed_images.append({
-                    "url": image_url,
+                saved_urls = save_product_image(product_id, image_bytes, "main", i)
+                image_data = {
+                    "url": saved_urls["main"],
                     "is_primary": img_data.is_primary or False,
                     "alt_text": getattr(img_data, 'alt_text', f"Product image {i+1}")
-                })
+                }
+                
+                # Add thumbnail URL if available
+                if saved_urls["thumbnail"]:
+                    image_data["thumbnail"] = saved_urls["thumbnail"]
+                
+                processed_images.append(image_data)
                 logger.info(f"Successfully processed base64 image {i}")
             except Exception as e:
                 logger.error(f"Error processing base64 image {i}: {str(e)}")
                 continue
         else:
             # If it's already a regular URL, use it as is
-            processed_images.append({
+            image_data = {
                 "url": img_data.url,
                 "is_primary": img_data.is_primary or False,
                 "alt_text": getattr(img_data, 'alt_text', f"Product image {i+1}")
-            })
+            }
+            processed_images.append(image_data)
             logger.info(f"Using existing URL for image {i}")
     
     return processed_images
 
 def delete_old_image_files(product: Product):
     """Delete old image files (both main images and hover image)"""
-    # Delete main product images
+    # Delete main product images and thumbnails
     if product.images:
         for image_data in product.images:
+            # Delete main image
             if 'url' in image_data and image_data['url'].startswith(PRODUCT_BASE_URL):
                 filename = image_data['url'].replace(PRODUCT_BASE_URL, '')
                 filepath = os.path.join(PRODUCT_IMAGE_FOLDER, filename)
                 if os.path.exists(filepath):
                     os.remove(filepath)
                     logger.info(f"Deleted old image: {filename}")
+            
+            # Delete thumbnail if exists
+            if 'thumbnail' in image_data and image_data['thumbnail'] and image_data['thumbnail'].startswith(PRODUCT_BASE_URL):
+                thumb_filename = image_data['thumbnail'].replace(PRODUCT_BASE_URL, '')
+                thumb_filepath = os.path.join(PRODUCT_IMAGE_FOLDER, thumb_filename)
+                if os.path.exists(thumb_filepath):
+                    os.remove(thumb_filepath)
+                    logger.info(f"Deleted old thumbnail: {thumb_filename}")
     
     # Delete hover image
     if product.hover_image and product.hover_image.startswith(PRODUCT_BASE_URL):
@@ -189,7 +338,7 @@ def create_product(
     product_data: ProductCreate,
     user: user_dependency
 ):
-    """Create a new product with images"""
+    """Create a new product with optimized images"""
     try:
         logger.info("Starting product creation")
         
