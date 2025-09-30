@@ -68,7 +68,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(PreventDuplicateRequestsMiddleware)
+# app.add_middleware(PreventDuplicateRequestsMiddleware)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 # Include routers
 app.include_router(vlog.router)
