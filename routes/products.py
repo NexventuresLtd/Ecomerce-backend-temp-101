@@ -121,7 +121,7 @@ def compress_image_opencv(image_data: bytes, max_size=(MAX_WIDTH, MAX_HEIGHT), q
             ratio = min(max_size[0] / width, max_size[1] / height)
             new_width = int(width * ratio)
             new_height = int(height * ratio)
-            img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+            img = cv2.resize(img, (new_width, new_height), interpolation=cv2.IMREAD_COLOR)
         
         # Encode with compression
         encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
@@ -235,20 +235,39 @@ def process_single_image(product_id: int, image_url: str, image_type: str = "hov
         logger.info(f"Using existing URL for {image_type} image")
         return image_url
 
-def process_product_images_from_urls(product_id: int, images_data: List[ProductImageSchema]) -> List[Dict[str, Any]]:
-    """Process images from base64 URLs in the existing schema"""
+def is_base64_image(url: str) -> bool:
+    """Check if the URL is a base64 data URL"""
+    return url and url.startswith('data:image')
+
+def delete_single_image_file(image_url: str):
+    """Delete a single image file and its thumbnail if they exist"""
+    if image_url and image_url.startswith(PRODUCT_BASE_URL):
+        filename = image_url.replace(PRODUCT_BASE_URL, '')
+        filepath = os.path.join(PRODUCT_IMAGE_FOLDER, filename)
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            logger.info(f"Deleted image file: {filename}")
+        
+        # Also try to delete thumbnail if it exists
+        thumb_filename = filename.replace('.', '_thumb.')
+        thumb_filepath = os.path.join(PRODUCT_IMAGE_FOLDER, thumb_filename)
+        if os.path.exists(thumb_filepath):
+            os.remove(thumb_filepath)
+            logger.info(f"Deleted thumbnail file: {thumb_filename}")
+
+def process_product_images_selectively(product_id: int, new_images_data: List[ProductImageSchema], current_images: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Process images selectively - only update base64 images, keep existing URLs"""
     processed_images = []
     
-    for i, img_data in enumerate(images_data):
-        logger.debug(f"Processing image {i}: {img_data.url[:100] if img_data.url else 'No URL'}")
-        
-        if not img_data.url:
-            logger.warning(f"Image {i} has no URL")
+    for i, new_img_data in enumerate(new_images_data):
+        if not new_img_data.url:
+            logger.warning(f"Image {i} has no URL, skipping")
             continue
             
-        # Check if it's a base64 data URL
-        if img_data.url.startswith('data:image'):
-            image_bytes = decode_base64(img_data.url)
+        # If it's a base64 image, process it as new
+        if is_base64_image(new_img_data.url):
+            logger.info(f"Processing new base64 image {i}")
+            image_bytes = decode_base64(new_img_data.url)
             if not image_bytes:
                 logger.warning(f"Image {i} failed base64 decoding")
                 continue
@@ -257,8 +276,8 @@ def process_product_images_from_urls(product_id: int, images_data: List[ProductI
                 saved_urls = save_product_image(product_id, image_bytes, "main", i)
                 image_data = {
                     "url": saved_urls["main"],
-                    "is_primary": img_data.is_primary or False,
-                    "alt_text": getattr(img_data, 'alt_text', f"Product image {i+1}")
+                    "is_primary": new_img_data.is_primary or False,
+                    "alt_text": getattr(new_img_data, 'alt_text', f"Product image {i+1}")
                 }
                 
                 # Add thumbnail URL if available
@@ -266,24 +285,62 @@ def process_product_images_from_urls(product_id: int, images_data: List[ProductI
                     image_data["thumbnail"] = saved_urls["thumbnail"]
                 
                 processed_images.append(image_data)
-                logger.info(f"Successfully processed base64 image {i}")
+                logger.info(f"Successfully processed new base64 image {i}")
+                
             except Exception as e:
                 logger.error(f"Error processing base64 image {i}: {str(e)}")
+                # If processing fails, try to use existing image at this position if available
+                if i < len(current_images):
+                    processed_images.append(current_images[i])
+                    logger.info(f"Used existing image for failed base64 image at position {i}")
                 continue
+                
         else:
-            # If it's already a regular URL, use it as is
+            # It's a regular URL - use it as is
+            logger.info(f"Using existing URL for image {i}: {new_img_data.url}")
             image_data = {
-                "url": img_data.url,
-                "is_primary": img_data.is_primary or False,
-                "alt_text": getattr(img_data, 'alt_text', f"Product image {i+1}")
+                "url": new_img_data.url,
+                "is_primary": new_img_data.is_primary or False,
+                "alt_text": getattr(new_img_data, 'alt_text', f"Product image {i+1}")
             }
             processed_images.append(image_data)
-            logger.info(f"Using existing URL for image {i}")
     
     return processed_images
 
-def delete_old_image_files(product: Product):
-    """Delete old image files (both main images and hover image)"""
+def delete_old_images_for_base64_updates(new_images_data: List[ProductImageSchema], current_images: List[Dict[str, Any]]):
+    """Delete only the old image files that are being replaced by base64 images"""
+    if not current_images:
+        return
+        
+    for i, new_img_data in enumerate(new_images_data):
+        if i < len(current_images):
+            current_img = current_images[i]
+            new_url = new_img_data.url
+            
+            # If we have a base64 image at this position and the current image is a file URL
+            if (is_base64_image(new_url) and 
+                current_img.get('url') and 
+                current_img['url'].startswith(PRODUCT_BASE_URL)):
+                
+                logger.info(f"Deleting old image file at position {i} for base64 update")
+                delete_single_image_file(current_img['url'])
+                
+                # Also delete thumbnail if exists
+                if current_img.get('thumbnail'):
+                    delete_single_image_file(current_img['thumbnail'])
+
+def delete_old_hover_image_files(product: Product):
+    """Delete only hover image files"""
+    # Delete hover image
+    if product.hover_image and product.hover_image.startswith(PRODUCT_BASE_URL):
+        filename = product.hover_image.replace(PRODUCT_BASE_URL, '')
+        filepath = os.path.join(PRODUCT_IMAGE_FOLDER, filename)
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            logger.info(f"Deleted old hover image: {filename}")
+
+def delete_old_main_image_files(product: Product):
+    """Delete only main product image files (not hover image)"""
     # Delete main product images and thumbnails
     if product.images:
         for image_data in product.images:
@@ -302,14 +359,6 @@ def delete_old_image_files(product: Product):
                 if os.path.exists(thumb_filepath):
                     os.remove(thumb_filepath)
                     logger.info(f"Deleted old thumbnail: {thumb_filename}")
-    
-    # Delete hover image
-    if product.hover_image and product.hover_image.startswith(PRODUCT_BASE_URL):
-        filename = product.hover_image.replace(PRODUCT_BASE_URL, '')
-        filepath = os.path.join(PRODUCT_IMAGE_FOLDER, filename)
-        if os.path.exists(filepath):
-            os.remove(filepath)
-            logger.info(f"Deleted old hover image: {filename}")
 
 # Product endpoints
 @router.get("/", response_model=List[ProductResponse])
@@ -367,9 +416,7 @@ def create_product(
             raise HTTPException(status_code=400, detail="Only one image can be set as primary")
         
         # Create product first without images to get ID
-        product_dict = product_data.model_dump()
-        images_data = product_dict.pop('images')  # Remove images for now
-        hover_image = product_dict.pop('hover_image', None)  # Remove hover_image for separate processing
+        product_dict = product_data.model_dump(exclude={'images', 'hover_image'})
         
         logger.info("Creating product in database")
         db_product = Product(**product_dict)
@@ -379,9 +426,50 @@ def create_product(
         logger.info(f"Product created with ID: {db_product.id}")
         
         try:
-            # Process and save main images
+            # Process and save main images - For creation, ALL images should be processed
             logger.info("Processing main images...")
-            processed_images = process_product_images_from_urls(db_product.id, product_data.images)
+            processed_images = []
+            
+            for i, img_data in enumerate(product_data.images):
+                if not img_data.url:
+                    logger.warning(f"Image {i} has no URL, skipping")
+                    continue
+                    
+                # For product creation, we expect base64 images
+                if is_base64_image(img_data.url):
+                    logger.info(f"Processing base64 image {i} for new product")
+                    image_bytes = decode_base64(img_data.url)
+                    if not image_bytes:
+                        logger.warning(f"Image {i} failed base64 decoding")
+                        continue
+                        
+                    try:
+                        saved_urls = save_product_image(db_product.id, image_bytes, "main", i)
+                        image_info = {
+                            "url": saved_urls["main"],
+                            "is_primary": img_data.is_primary or False,
+                            "alt_text": getattr(img_data, 'alt_text', f"Product image {i+1}")
+                        }
+                        
+                        # Add thumbnail URL if available
+                        if saved_urls["thumbnail"]:
+                            image_info["thumbnail"] = saved_urls["thumbnail"]
+                            
+                        processed_images.append(image_info)
+                        logger.info(f"Successfully processed base64 image {i}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing base64 image {i}: {str(e)}")
+                        raise HTTPException(status_code=400, detail=f"Failed to process image {i+1}: {str(e)}")
+                else:
+                    # For product creation, we can also accept regular URLs
+                    logger.info(f"Using provided URL for image {i}")
+                    image_info = {
+                        "url": img_data.url,
+                        "is_primary": img_data.is_primary or False,
+                        "alt_text": getattr(img_data, 'alt_text', f"Product image {i+1}")
+                    }
+                    processed_images.append(image_info)
             
             if not processed_images:
                 logger.error("No valid images could be processed")
@@ -396,9 +484,9 @@ def create_product(
             
             # Process hover image if provided
             processed_hover_image = None
-            if hover_image:
+            if product_data.hover_image:
                 logger.info("Processing hover image...")
-                processed_hover_image = process_single_image(db_product.id, hover_image, "hover")
+                processed_hover_image = process_single_image(db_product.id, product_data.hover_image, "hover")
                 if processed_hover_image:
                     logger.info("Hover image processed successfully")
                 else:
@@ -411,6 +499,8 @@ def create_product(
             db.refresh(db_product)
             logger.info("Product updated with images successfully")
             
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Image processing failed: {str(e)}")
             # Clean up if image processing fails
@@ -425,7 +515,7 @@ def create_product(
     except Exception as e:
         logger.error(f"Unexpected error in create_product: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
+    
 @router.put("/{product_id}", response_model=ProductResponse)
 def update_product(
     db: db_dependency,
@@ -446,6 +536,10 @@ def update_product(
         if not category:
             raise HTTPException(status_code=400, detail="Category does not exist")
     
+    # Store current state for comparison
+    current_images = db_product.images.copy() if db_product.images else []
+    current_hover_image = db_product.hover_image
+    
     # Handle images if provided in update
     images_updated = False
     if product_data.images is not None:
@@ -463,13 +557,13 @@ def update_product(
     # Handle hover image if provided in update
     hover_image_updated = product_data.hover_image is not None
     
-    # Delete old image files if we're updating images
-    if images_updated or hover_image_updated:
-        delete_old_image_files(db_product)
-    
-    # Process main images if provided
+    # Process main images if provided - with selective updating
     if images_updated:
-        processed_images = process_product_images_from_urls(product_id, product_data.images)
+        # Delete ONLY the old images that are being replaced by base64 images
+        delete_old_images_for_base64_updates(product_data.images, current_images)
+        
+        # Process images selectively - only base64 images get new files, URLs are kept as-is
+        processed_images = process_product_images_selectively(product_id, product_data.images, current_images)
         
         if not processed_images:
             raise HTTPException(status_code=400, detail="No valid images provided")
@@ -480,11 +574,18 @@ def update_product(
         
         # Update product with new images
         db_product.images = processed_images
+        logger.info(f"Updated main images: {len(processed_images)} images processed")
     
-    # Process hover image if provided
+    # Process hover image if provided - ONLY if it's a base64 image
     if hover_image_updated:
+        # Delete old hover image ONLY if we're uploading a new base64 image
+        if is_base64_image(product_data.hover_image):
+            delete_old_hover_image_files(db_product)
+            logger.info("Deleted old hover image for base64 update")
+        
         processed_hover_image = process_single_image(product_id, product_data.hover_image, "hover")
         db_product.hover_image = processed_hover_image
+        logger.info(f"Updated hover image: {processed_hover_image}")
     
     # Update other fields
     update_data = product_data.model_dump(exclude_unset=True, exclude={'images', 'hover_image'})
@@ -493,6 +594,10 @@ def update_product(
     
     db.commit()
     db.refresh(db_product)
+    
+    logger.info(f"Product {product_id} updated successfully. "
+                f"Images updated: {images_updated}, Hover image updated: {hover_image_updated}")
+    
     return db_product
 
 @router.delete("/{product_id}")
@@ -504,8 +609,9 @@ def delete_product(product_id: int, db: db_dependency, user: user_dependency):
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    # Delete all associated image files
-    delete_old_image_files(product)
+    # Delete all associated image files using both functions
+    delete_old_main_image_files(product)
+    delete_old_hover_image_files(product)
     
     # Delete product from database
     db.delete(product)
