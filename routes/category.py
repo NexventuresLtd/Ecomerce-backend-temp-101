@@ -18,7 +18,7 @@ router = APIRouter(prefix="/categories", tags=["categories"])
 def get_main_categories(
     db: db_dependency,
     skip: int = 0, 
-    limit: int = 100, 
+    limit: int = 10000, 
 ):
     return db.query(MainCategory).offset(skip).limit(limit).all()
 
@@ -74,7 +74,7 @@ def delete_main_category(category_id: int, db: db_dependency):
 def get_sub_categories(
     db: db_dependency,
     skip: int = 0, 
-    limit: int = 100, 
+    limit: int = 10000, 
 ):
     return db.query(SubCategory).offset(skip).limit(limit).all()
 
@@ -133,7 +133,7 @@ def delete_sub_category(category_id: int, db: db_dependency):
 def get_product_categories(
     db: db_dependency,
     skip: int = 0, 
-    limit: int = 100, 
+    limit: int = 10000, 
 ):
     return db.query(ProductCategory).offset(skip).limit(limit).all()
 
