@@ -1,5 +1,6 @@
 # routes/product.py
 from fastapi import APIRouter, HTTPException, status, UploadFile, File, Form, Depends
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import selectinload, joinedload
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -10,7 +11,7 @@ import uuid
 import logging
 import json
 from io import BytesIO
-
+from functions.productsMana import encode_id
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -51,7 +52,8 @@ IMAGE_QUALITY = 85  # JPEG quality (0-100)
 MAX_WIDTH = 1200    # Maximum width for images
 MAX_HEIGHT = 1200   # Maximum height for images
 THUMBNAIL_SIZE = (400, 400)  # Thumbnail dimensions
-
+MAINURL=os.getenv("FRONTEND_URL_MAIN", "http://127.0.0.1:8000")
+FRONTEND_URL_ONLINE = os.getenv("FRONTEND_URL_ONLINE", "https://umukamezi.nexventures.net")
 # ---------------- HELPERS ----------------
 def get_image_extension_from_content_type(content_type: str) -> str:
     """Get image extension from content type"""
@@ -757,3 +759,48 @@ def set_primary_image(
     db.refresh(product)
     
     return {"message": "Primary image set successfully", "product": product}
+
+
+
+@router.get("/share/product/{product_id}", response_class=HTMLResponse)
+async def share_product(product_id: int, db: db_dependency):
+    """Generate a shareable HTML page with Open Graph and Twitter Card meta tags"""
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        return HTMLResponse("<h1>Product not found</h1>", status_code=404)
+
+    # Ensure values exist
+    title = product.title or "Product"
+    description = product.description or f"Price: {product.price} RWF"
+    image = product.images[0] if product.images else "{MAINURL}/default.jpg"
+    encode = encode_id(product.id)
+    url = f"{FRONTEND_URL_ONLINE}product/{encode}"
+    print(image["url"])
+    img = FRONTEND_URL_ONLINE + image["url"]
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>{title}</title>
+
+        <!-- Open Graph / Facebook / WhatsApp -->
+        <meta property="og:title" content="{title}" />
+        <meta property="og:description" content="{description}" />
+        <meta property="og:image" content="{img}" />
+        <meta property="og:url" content="{url}" />
+        <meta property="og:type" content="product" />
+
+        <!-- Twitter Card -->
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="{title}" />
+        <meta name="twitter:description" content="{description}" />
+        <meta name="twitter:image" content="{img}" />
+    </head>
+    <body>
+        <p>Redirecting to product page...</p>
+        <script>window.location.href="{url}"</script>
+    </body>
+    </html>
+    """
