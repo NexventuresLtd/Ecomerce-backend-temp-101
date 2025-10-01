@@ -29,7 +29,7 @@ class ProductBase(BaseModel):
     tags: List[str] = []
     features: List[str] = []
     colors: List[Dict[str, Any]] = []
-    category_id: Optional[int] = None
+    category_id: Optional[Any] = None
     images: List[ProductImageSchema] = Field(..., min_items=1, description="List of product images")
 
 class ProductCreate(ProductBase):
