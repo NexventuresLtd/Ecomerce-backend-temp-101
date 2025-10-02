@@ -14,7 +14,7 @@ class ProductBase(BaseModel):
     original_price: Optional[float] = Field(None, gt=0)
     discount: Optional[float] = Field(None, ge=0, le=100)
     rating: float = Field(0.0, ge=0, le=5)
-    is_new: str = "used"
+    is_new: Optional[str] = None
     is_featured: bool = False
     is_active: bool = True
     reviews_count: int = Field(0, ge=0)
