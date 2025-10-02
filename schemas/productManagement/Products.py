@@ -8,9 +8,9 @@ class ProductImageSchema(BaseModel):
     is_primary: bool = False  # Default value if not provided
 
 class ProductBase(BaseModel):
-    title: str = Field(..., min_length=1, max_length=255)
-    description: str = Field(..., min_length=1)
-    price: float = Field(..., gt=0)
+    title: str = Field(None)
+    description: str = Field(None)
+    price: float = Field(None)
     original_price: Optional[float] = Field(None)
     discount: Optional[float] = Field(None)
     rating: float = Field(0.0)
@@ -36,8 +36,8 @@ class ProductCreate(ProductBase):
     pass
 
 class ProductUpdate(BaseModel):
-    title: Optional[str] = Field(None, min_length=1, max_length=255)
-    description: Optional[str] = Field(None, min_length=1)
+    title: Optional[str] = Field(None)
+    description: Optional[str] = Field(None)
     price: Optional[float] = Field(None)
     original_price: Optional[float] = Field(None)
     discount: Optional[float] = Field(None)
