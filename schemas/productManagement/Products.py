@@ -11,14 +11,14 @@ class ProductBase(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     description: str = Field(..., min_length=1)
     price: float = Field(..., gt=0)
-    original_price: Optional[float] = Field(None, gt=0)
-    discount: Optional[float] = Field(None, ge=0, le=100)
-    rating: float = Field(0.0, ge=0, le=5)
+    original_price: Optional[float] = Field(None)
+    discount: Optional[float] = Field(None)
+    rating: float = Field(0.0)
     is_new: Optional[str] = None
     is_featured: bool = False
     is_active: bool = True
-    reviews_count: int = Field(0, ge=0)
-    instock: int = Field(0, ge=0)
+    reviews_count: int = Field(0)
+    instock: int = Field(0)
     delivery_fee: Optional[str] = None
     brock: Optional[str] = None
     returnDay: Optional[str] = None
@@ -38,16 +38,16 @@ class ProductCreate(ProductBase):
 class ProductUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = Field(None, min_length=1)
-    price: Optional[float] = Field(None, gt=0)
-    original_price: Optional[float] = Field(None, gt=0)
-    discount: Optional[float] = Field(None, ge=0, le=100)
-    rating: Optional[float] = Field(None, ge=0, le=5)
+    price: Optional[float] = Field(None)
+    original_price: Optional[float] = Field(None)
+    discount: Optional[float] = Field(None)
+    rating: Optional[float] = Field(None)
     warranty: Optional[str] = None
     is_new: Optional[str] = None
     is_featured: Optional[bool] = None
     is_active: Optional[bool] = None
-    reviews_count: Optional[int] = Field(None, ge=0)
-    instock: Optional[int] = Field(None, ge=0)
+    reviews_count: Optional[int] = Field(None)
+    instock: Optional[int] = Field(None)
     delivery_fee: Optional[str] = None
     brock: Optional[str] = None
     returnDay: Optional[str] = None
@@ -81,7 +81,7 @@ class ProductResponse(ProductBase):
 
 # Request schema for setting primary image
 class SetPrimaryImageRequest(BaseModel):
-    image_index: int = Field(..., ge=0, description="Index of the image in the images array")
+    image_index: int = Field(..., description="Index of the image in the images array")
 
 class SetPrimaryImageResponse(BaseModel):
     message: str
