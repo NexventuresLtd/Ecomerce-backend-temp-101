@@ -306,7 +306,7 @@ async def create_product(
     instock: int = Form(...),
     original_price: Optional[float] = Form(None),
     discount: Optional[float] = Form(None),
-    is_new: bool = Form(False),
+    is_new: str = Form("used"),
     is_featured: bool = Form(False),
     is_active: bool = Form(True),
     delivery_fee: Optional[str] = Form(None),
@@ -575,8 +575,6 @@ async def update_product(
             update_data["category_id"] = parsed_category_id
         
         # Boolean fields with parsing
-        if is_new is not None:
-            update_data["is_new"] = parse_optional_bool(is_new)
         if is_featured is not None:
             update_data["is_featured"] = parse_optional_bool(is_featured)
         if is_active is not None:
