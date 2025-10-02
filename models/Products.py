@@ -20,7 +20,7 @@ class Product(Base):
     discount = Column(Float, nullable=True)
 
     rating = Column(Float, default=0.0)
-    is_new = Column(Boolean, default=False)
+    is_new = Column(String, default="used")
     is_featured = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
 
