@@ -555,7 +555,8 @@ async def update_product(
             "brock": brock,
             "returnDay": returnDay,
             "warranty": warranty,
-            "tutorial_video": tutorial_video
+            "tutorial_video": tutorial_video,
+            "is_new": is_new
         }
         
         for field, value in string_fields.items():
