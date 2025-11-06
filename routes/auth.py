@@ -138,7 +138,7 @@ async def get_all_users(
     Get all users with total count (Admin only)
     """
     # Check if current user has admin privileges
-    if not current_user or not current_user.get("is_admin", False):
+    if not current_user or not current_user.get("role") == UserRole.ADMIN.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions"
@@ -199,7 +199,7 @@ async def update_user(
     """
     # Check if user is updating their own data or is admin
     is_own_profile = current_user.get("user_id") == user_id
-    is_admin = current_user.get("is_admin", False)
+    is_admin = current_user.get("role") == UserRole.ADMIN.value
     
     if not is_own_profile and not is_admin:
         raise HTTPException(
