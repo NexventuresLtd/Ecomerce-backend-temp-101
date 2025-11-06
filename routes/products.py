@@ -311,8 +311,8 @@ async def get_products(
     returnDay: Optional[str] = Query(None, description="Filter by return day"),
     warranty: Optional[str] = Query(None, description="Filter by warranty"),
     
-    # Category filters
-    category_id: Optional[int] = Query(None, description="Filter by category ID"),
+    # Category filters - UPDATED: Support multiple category IDs
+    category_id: Optional[List[int]] = Query(None, description="Filter by category ID(s) - can be multiple"),
     category_slug: Optional[str] = Query(None, description="Filter by category slug"),
     category_name: Optional[str] = Query(None, description="Filter by category name (partial match)"),
     
@@ -399,12 +399,23 @@ async def get_products(
         if warranty:
             filters.append(Product.warranty.ilike(f"%{warranty}%"))
         
-        # Category filters
+        # Category filters - UPDATED: Support multiple category IDs
+        category_filters_applied = False
         if category_id or category_slug or category_name:
             query = query.join(ProductCategory)
+            category_filters_applied = True
             
+            # Handle multiple category IDs
             if category_id:
-                filters.append(ProductCategory.id == category_id)
+                if isinstance(category_id, list) and len(category_id) > 0:
+                    # Multiple category IDs - use IN clause
+                    filters.append(ProductCategory.id.in_(category_id))
+                    logger.info(f"Filtering by multiple category IDs: {category_id}")
+                else:
+                    # Single category ID
+                    filters.append(ProductCategory.id == category_id)
+                    logger.info(f"Filtering by single category ID: {category_id}")
+            
             if category_slug:
                 filters.append(ProductCategory.slug == category_slug)
             if category_name:
@@ -421,7 +432,7 @@ async def get_products(
             filters.append(Product.features.contains([features]))
         if color_name:
             # Search for color name in colors JSONB array
-            filters.append(Product.columes.contains([{"name": color_name}]))
+            filters.append(Product.colors.contains([{"name": color_name}]))
         if color_value:
             # Search for color value in colors JSONB array
             filters.append(Product.colors.contains([{"value": color_value}]))
@@ -474,6 +485,8 @@ async def get_products(
         # Apply pagination
         products = query.offset(skip).limit(limit).all()
         
+        logger.info(f"Products query completed: {len(products)} products found out of {total_count} total")
+        
         return ProductListResponse(
             products=products,
             total_count=total_count,
@@ -482,11 +495,11 @@ async def get_products(
         )
         
     except Exception as e:
+        logger.error(f"Error retrieving products: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving products: {str(e)}"
         )
-
 
 
 @router.get("/{product_id}", response_model=ProductResponse)
