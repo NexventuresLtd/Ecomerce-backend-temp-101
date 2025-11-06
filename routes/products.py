@@ -1,5 +1,6 @@
 # routes/product.py
 from fastapi import APIRouter, HTTPException, status, UploadFile, File, Form, Depends,Query
+from sqlalchemy import and_, or_
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import selectinload, joinedload 
 from typing import List, Optional, Dict, Any
@@ -281,7 +282,7 @@ async def get_products(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Number of records to return"),
     
-    # Product filters - based on actual columns
+    # Product filters
     product_id: Optional[int] = Query(None, description="Filter by product ID"),
     title: Optional[str] = Query(None, description="Filter by product title (partial match)"),
     description: Optional[str] = Query(None, description="Filter by product description (partial match)"),
@@ -311,8 +312,13 @@ async def get_products(
     returnDay: Optional[str] = Query(None, description="Filter by return day"),
     warranty: Optional[str] = Query(None, description="Filter by warranty"),
     
-    # Category filters - UPDATED: Support multiple category IDs
-    category_id: Optional[List[int]] = Query(None, description="Filter by category ID(s) - can be multiple"),
+    # Category hierarchy filters - UPDATED: Support all category types
+    main_category_id: Optional[List[int]] = Query(None, description="Filter by main category ID(s)"),
+    sub_category_id: Optional[List[int]] = Query(None, description="Filter by sub category ID(s)"),
+    product_category_id: Optional[List[int]] = Query(None, description="Filter by product category ID(s)"),
+    
+    # Individual category filters (backward compatibility)
+    category_id: Optional[List[int]] = Query(None, description="Filter by product category ID(s) - legacy"),
     category_slug: Optional[str] = Query(None, description="Filter by category slug"),
     category_name: Optional[str] = Query(None, description="Filter by category name (partial match)"),
     
@@ -340,6 +346,8 @@ async def get_products(
     
 ):
     try:
+        from models.Categories import MainCategory, SubCategory, ProductCategory
+        
         query = db.query(Product)
         
         # Build filters dynamically
@@ -399,27 +407,68 @@ async def get_products(
         if warranty:
             filters.append(Product.warranty.ilike(f"%{warranty}%"))
         
-        # Category filters - UPDATED: Support multiple category IDs
+        # Category hierarchy filters - UPDATED: Support all category levels
         category_filters_applied = False
-        if category_id or category_slug or category_name:
+        
+        # Main Category Filter (gets all products under main category and its children)
+        if main_category_id:
+            if isinstance(main_category_id, list) and len(main_category_id) > 0:
+                # Get all sub categories under these main categories
+                sub_categories_under_main = db.query(SubCategory.id).filter(
+                    SubCategory.main_category_id.in_(main_category_id)
+                ).subquery()
+                
+                # Get all product categories under those sub categories
+                product_categories_under_sub = db.query(ProductCategory.id).filter(
+                    ProductCategory.sub_category_id.in_(sub_categories_under_main)
+                ).subquery()
+                
+                # Filter products by those product categories
+                query = query.join(ProductCategory)
+                filters.append(ProductCategory.id.in_(product_categories_under_sub))
+                category_filters_applied = True
+                logger.info(f"Filtering by main category IDs: {main_category_id}")
+        
+        # Sub Category Filter (gets all products under sub category and its product categories)
+        if sub_category_id and not category_filters_applied:
+            if isinstance(sub_category_id, list) and len(sub_category_id) > 0:
+                # Get all product categories under these sub categories
+                product_categories_under_sub = db.query(ProductCategory.id).filter(
+                    ProductCategory.sub_category_id.in_(sub_category_id)
+                ).subquery()
+                
+                # Filter products by those product categories
+                query = query.join(ProductCategory)
+                filters.append(ProductCategory.id.in_(product_categories_under_sub))
+                category_filters_applied = True
+                logger.info(f"Filtering by sub category IDs: {sub_category_id}")
+        
+        # Product Category Filter (direct product category filtering)
+        if product_category_id and not category_filters_applied:
+            if isinstance(product_category_id, list) and len(product_category_id) > 0:
+                query = query.join(ProductCategory)
+                filters.append(ProductCategory.id.in_(product_category_id))
+                category_filters_applied = True
+                logger.info(f"Filtering by product category IDs: {product_category_id}")
+        
+        # Legacy category_id filter (treats as product category for backward compatibility)
+        if category_id and not category_filters_applied:
+            if isinstance(category_id, list) and len(category_id) > 0:
+                query = query.join(ProductCategory)
+                filters.append(ProductCategory.id.in_(category_id))
+                category_filters_applied = True
+                logger.info(f"Filtering by legacy category IDs: {category_id}")
+        
+        # Individual category filters (for backward compatibility)
+        if category_slug and not category_filters_applied:
             query = query.join(ProductCategory)
+            filters.append(ProductCategory.slug == category_slug)
             category_filters_applied = True
-            
-            # Handle multiple category IDs
-            if category_id:
-                if isinstance(category_id, list) and len(category_id) > 0:
-                    # Multiple category IDs - use IN clause
-                    filters.append(ProductCategory.id.in_(category_id))
-                    logger.info(f"Filtering by multiple category IDs: {category_id}")
-                else:
-                    # Single category ID
-                    filters.append(ProductCategory.id == category_id)
-                    logger.info(f"Filtering by single category ID: {category_id}")
-            
-            if category_slug:
-                filters.append(ProductCategory.slug == category_slug)
-            if category_name:
-                filters.append(ProductCategory.name.ilike(f"%{category_name}%"))
+        
+        if category_name and not category_filters_applied:
+            query = query.join(ProductCategory)
+            filters.append(ProductCategory.name.ilike(f"%{category_name}%"))
+            category_filters_applied = True
         
         # Owner filter
         if owner_id is not None:
@@ -431,10 +480,8 @@ async def get_products(
         if features:
             filters.append(Product.features.contains([features]))
         if color_name:
-            # Search for color name in colors JSONB array
             filters.append(Product.colors.contains([{"name": color_name}]))
         if color_value:
-            # Search for color value in colors JSONB array
             filters.append(Product.colors.contains([{"value": color_value}]))
         
         # Date filters
@@ -453,10 +500,8 @@ async def get_products(
                 Product.title.ilike(f"%{search}%"),
                 Product.description.ilike(f"%{search}%"),
             ]
-            # Also search in JSON arrays
             search_filters.append(Product.tags.contains([search]))
             search_filters.append(Product.features.contains([search]))
-            
             filters.append(or_(*search_filters))
         
         # Apply all filters
@@ -500,7 +545,6 @@ async def get_products(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving products: {str(e)}"
         )
-
 
 @router.get("/{product_id}", response_model=ProductResponse)
 def get_product(product_id: int, db: db_dependency):
