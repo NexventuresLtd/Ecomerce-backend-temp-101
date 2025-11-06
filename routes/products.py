@@ -1,7 +1,7 @@
 # routes/product.py
-from fastapi import APIRouter, HTTPException, status, UploadFile, File, Form, Depends
+from fastapi import APIRouter, HTTPException, status, UploadFile, File, Form, Depends,Query
 from fastapi.responses import HTMLResponse
-from sqlalchemy.orm import selectinload, joinedload
+from sqlalchemy.orm import selectinload, joinedload 
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import os
@@ -37,7 +37,7 @@ from db.connection import db_dependency
 from models.Products import Product
 from models.Categories import ProductCategory
 from schemas.productManagement.Products import (
-    ProductCreate, ProductResponse, ProductUpdate, ProductImageSchema
+    ProductCreate, ProductResponse, ProductUpdate, ProductImageSchema,ProductListResponse
 )
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -273,16 +273,221 @@ def parse_optional_bool(value: Optional[str]) -> Optional[bool]:
         return None
     return value.lower() in ['true', '1', 'yes', 'on']
 
-# Product endpoints
-@router.get("/", response_model=List[ProductResponse])
-def get_products(
+
+@router.get("/", response_model=ProductListResponse)
+async def get_products(
     db: db_dependency,
-    skip: int = 0, 
-    limit: int = 100, 
+    # Basic filters
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Number of records to return"),
+    
+    # Product filters - based on actual columns
+    product_id: Optional[int] = Query(None, description="Filter by product ID"),
+    title: Optional[str] = Query(None, description="Filter by product title (partial match)"),
+    description: Optional[str] = Query(None, description="Filter by product description (partial match)"),
+    
+    # Price filters
+    price_min: Optional[float] = Query(None, ge=0, description="Minimum price"),
+    price_max: Optional[float] = Query(None, ge=0, description="Maximum price"),
+    original_price_min: Optional[float] = Query(None, ge=0, description="Minimum original price"),
+    original_price_max: Optional[float] = Query(None, ge=0, description="Maximum original price"),
+    discount_min: Optional[float] = Query(None, ge=0, description="Minimum discount"),
+    discount_max: Optional[float] = Query(None, ge=0, description="Maximum discount"),
+    
+    # Rating and status filters
+    rating_min: Optional[float] = Query(None, ge=0, le=5, description="Minimum rating"),
+    rating_max: Optional[float] = Query(None, ge=0, le=5, description="Maximum rating"),
+    is_new: Optional[str] = Query(None, description="Filter by condition: new or used"),
+    is_featured: Optional[bool] = Query(None, description="Filter by featured products"),
+    is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    
+    # Inventory and delivery filters
+    reviews_count_min: Optional[int] = Query(None, ge=0, description="Minimum reviews count"),
+    reviews_count_max: Optional[int] = Query(None, ge=0, description="Maximum reviews count"),
+    instock_min: Optional[int] = Query(None, ge=0, description="Minimum stock quantity"),
+    instock_max: Optional[int] = Query(None, ge=0, description="Maximum stock quantity"),
+    delivery_fee: Optional[str] = Query(None, description="Filter by delivery fee type"),
+    brock: Optional[str] = Query(None, description="Filter by brock"),
+    returnDay: Optional[str] = Query(None, description="Filter by return day"),
+    warranty: Optional[str] = Query(None, description="Filter by warranty"),
+    
+    # Category filters
+    category_id: Optional[int] = Query(None, description="Filter by category ID"),
+    category_slug: Optional[str] = Query(None, description="Filter by category slug"),
+    category_name: Optional[str] = Query(None, description="Filter by category name (partial match)"),
+    
+    # Owner filter
+    owner_id: Optional[int] = Query(None, description="Filter by owner ID"),
+    
+    # JSON array filters
+    tags: Optional[str] = Query(None, description="Filter by tag name (searches in tags array)"),
+    features: Optional[str] = Query(None, description="Filter by feature name (searches in features array)"),
+    color_name: Optional[str] = Query(None, description="Filter by color name (searches in colors array)"),
+    color_value: Optional[str] = Query(None, description="Filter by color value (searches in colors array)"),
+    
+    # Date filters
+    created_after: Optional[str] = Query(None, description="Filter products created after date (YYYY-MM-DD)"),
+    created_before: Optional[str] = Query(None, description="Filter products created before date (YYYY-MM-DD)"),
+    updated_after: Optional[str] = Query(None, description="Filter products updated after date (YYYY-MM-DD)"),
+    updated_before: Optional[str] = Query(None, description="Filter products updated before date (YYYY-MM-DD)"),
+    
+    # Search across multiple fields
+    search: Optional[str] = Query(None, description="Search across title, description, tags, features"),
+    
+    # Sorting
+    sort_by: str = Query("created_at", description="Field to sort by"),
+    sort_order: str = Query("desc", description="Sort order: asc or desc"),
+    
 ):
-    return db.query(Product).options(
-        joinedload(Product.category)
-    ).offset(skip).limit(limit).all()
+    try:
+        query = db.query(Product)
+        
+        # Build filters dynamically
+        filters = []
+        
+        # Product ID filter
+        if product_id is not None:
+            filters.append(Product.id == product_id)
+        
+        # Product text field filters
+        if title:
+            filters.append(Product.title.ilike(f"%{title}%"))
+        if description:
+            filters.append(Product.description.ilike(f"%{description}%"))
+        
+        # Price range filters
+        if price_min is not None:
+            filters.append(Product.price >= price_min)
+        if price_max is not None:
+            filters.append(Product.price <= price_max)
+        if original_price_min is not None:
+            filters.append(Product.original_price >= original_price_min)
+        if original_price_max is not None:
+            filters.append(Product.original_price <= original_price_max)
+        if discount_min is not None:
+            filters.append(Product.discount >= discount_min)
+        if discount_max is not None:
+            filters.append(Product.discount <= discount_max)
+        
+        # Rating and status filters
+        if rating_min is not None:
+            filters.append(Product.rating >= rating_min)
+        if rating_max is not None:
+            filters.append(Product.rating <= rating_max)
+        if is_new:
+            filters.append(Product.is_new == is_new)
+        if is_featured is not None:
+            filters.append(Product.is_featured == is_featured)
+        if is_active is not None:
+            filters.append(Product.is_active == is_active)
+        
+        # Inventory and delivery filters
+        if reviews_count_min is not None:
+            filters.append(Product.reviews_count >= reviews_count_min)
+        if reviews_count_max is not None:
+            filters.append(Product.reviews_count <= reviews_count_max)
+        if instock_min is not None:
+            filters.append(Product.instock >= instock_min)
+        if instock_max is not None:
+            filters.append(Product.instock <= instock_max)
+        if delivery_fee:
+            filters.append(Product.delivery_fee.ilike(f"%{delivery_fee}%"))
+        if brock:
+            filters.append(Product.brock.ilike(f"%{brock}%"))
+        if returnDay:
+            filters.append(Product.returnDay.ilike(f"%{returnDay}%"))
+        if warranty:
+            filters.append(Product.warranty.ilike(f"%{warranty}%"))
+        
+        # Category filters
+        if category_id or category_slug or category_name:
+            query = query.join(ProductCategory)
+            
+            if category_id:
+                filters.append(ProductCategory.id == category_id)
+            if category_slug:
+                filters.append(ProductCategory.slug == category_slug)
+            if category_name:
+                filters.append(ProductCategory.name.ilike(f"%{category_name}%"))
+        
+        # Owner filter
+        if owner_id is not None:
+            filters.append(Product.owner_id == owner_id)
+        
+        # JSON array filters
+        if tags:
+            filters.append(Product.tags.contains([tags]))
+        if features:
+            filters.append(Product.features.contains([features]))
+        if color_name:
+            # Search for color name in colors JSONB array
+            filters.append(Product.columes.contains([{"name": color_name}]))
+        if color_value:
+            # Search for color value in colors JSONB array
+            filters.append(Product.colors.contains([{"value": color_value}]))
+        
+        # Date filters
+        if created_after:
+            filters.append(Product.created_at >= created_after)
+        if created_before:
+            filters.append(Product.created_at <= created_before)
+        if updated_after:
+            filters.append(Product.updated_at >= updated_after)
+        if updated_before:
+            filters.append(Product.updated_at <= updated_before)
+        
+        # Global search across multiple fields
+        if search:
+            search_filters = [
+                Product.title.ilike(f"%{search}%"),
+                Product.description.ilike(f"%{search}%"),
+            ]
+            # Also search in JSON arrays
+            search_filters.append(Product.tags.contains([search]))
+            search_filters.append(Product.features.contains([search]))
+            
+            filters.append(or_(*search_filters))
+        
+        # Apply all filters
+        if filters:
+            query = query.filter(and_(*filters))
+        
+        # Get total count before pagination
+        total_count = query.count()
+        
+        # Apply sorting
+        valid_sort_columns = [
+            'id', 'title', 'price', 'original_price', 'discount', 'rating', 
+            'reviews_count', 'instock', 'created_at', 'updated_at'
+        ]
+        
+        if sort_by in valid_sort_columns:
+            sort_column = getattr(Product, sort_by)
+        else:
+            sort_column = Product.created_at
+            
+        if sort_order.lower() == "desc":
+            query = query.order_by(sort_column.desc())
+        else:
+            query = query.order_by(sort_column.asc())
+        
+        # Apply pagination
+        products = query.offset(skip).limit(limit).all()
+        
+        return ProductListResponse(
+            products=products,
+            total_count=total_count,
+            skip=skip,
+            limit=limit
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving products: {str(e)}"
+        )
+
+
 
 @router.get("/{product_id}", response_model=ProductResponse)
 def get_product(product_id: int, db: db_dependency):
@@ -729,10 +934,10 @@ def delete_product(product_id: int, db: db_dependency, user: user_dependency):
 
 @router.patch("/{product_id}/images/set-primary")
 def set_primary_image(
-    product_id: int,
-    image_index: int,
     db: db_dependency,
-    user: user_dependency
+    user: user_dependency,
+    product_id: int,
+    image_index: int = Query(..., description="Index of the image to set as primary"),
 ):
     """
     Set a specific image as primary by its index in the images array
@@ -750,16 +955,28 @@ def set_primary_image(
     if image_index < 0 or image_index >= len(product.images):
         raise HTTPException(status_code=400, detail="Invalid image index")
     
-    # Update all images to set is_primary=False
+    # Create a new list to ensure SQLAlchemy detects the change
+    updated_images = []
     for i, image in enumerate(product.images):
-        image["is_primary"] = (i == image_index)
+        # Create a new dict for each image to ensure change detection
+        updated_image = dict(image)  # Create a copy
+        updated_image["is_primary"] = (i == image_index)
+        updated_images.append(updated_image)
+    
+    # Assign the new list to trigger change detection
+    product.images = updated_images
+    
+    # Add debug logging
+    logger.info(f"Setting primary image for product {product_id} to index {image_index}")
+    logger.info(f"Updated images: {product.images}")
     
     db.commit()
     db.refresh(product)
     
+    # Verify the change was persisted
+    logger.info(f"After commit - Product images: {product.images}")
+    
     return {"message": "Primary image set successfully", "product": product}
-
-
 
 @router.get("/share/product/{product_id}", response_class=HTMLResponse)
 async def share_product(product_id: int, db: db_dependency):

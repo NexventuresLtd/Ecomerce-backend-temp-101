@@ -87,3 +87,13 @@ class SetPrimaryImageResponse(BaseModel):
     message: str
     primary_image_index: int
     product_id: int
+
+# Define the response schema
+class ProductListResponse(BaseModel):
+    products: List[ProductResponse]
+    total_count: int
+    skip: int
+    limit: int
+
+    class Config:
+        from_attributes = True
