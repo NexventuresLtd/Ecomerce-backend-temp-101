@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends,HTTPException, Request,BackgroundTasks
+from fastapi import APIRouter, Depends,HTTPException, Request,BackgroundTasks,status
 from fastapi.responses import HTMLResponse
 from typing import Annotated
 from starlette import status
@@ -8,6 +8,12 @@ from dotenv import load_dotenv
 from schemas.auth.RegisterResponse import AuthProvider_validator
 import os
 
+from models.userModels import Users, UserRole
+from schemas.auth.schemas import CreateUserRequest
+
+from datetime import datetime
+
+import os
 
 # Import from divided files
 from Endpoints.Auth.normal_login import login_for_access_token, get_current_user
@@ -119,3 +125,148 @@ async def google_auth_token_route(
     db: db_dependency
 ):
     return await google_auth_token(Email, db, request)
+
+
+@router.get("/users")
+async def get_all_users(
+    db: db_dependency,
+    current_user: user_dependency,
+    skip: int = 0,
+    limit: int = 100
+):
+    """
+    Get all users with total count (Admin only)
+    """
+    # Check if current user has admin privileges
+    if not current_user or not current_user.get("is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
+    
+    try:
+        # Get total count of users
+        total_users = db.query(Users).count()
+        
+        # Get paginated users
+        users = db.query(Users).offset(skip).limit(limit).all()
+        
+        # Convert users to list of dictionaries
+        users_list = []
+        for user in users:
+            users_list.append({
+                "id": user.id,
+                "fname": user.fname,
+                "lname": user.lname,
+                "email": user.email,
+                "phone": user.phone,
+                "profile_pic": user.profile_pic,
+                "role": user.role.value if user.role else None,
+                "provider": user.provider.value if user.provider else None,
+                "is_active": user.is_active,
+                "is_verified": user.is_verified,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "updated_at": user.updated_at.isoformat() if user.updated_at else None
+            })
+        
+        return {
+            "message": "Users retrieved successfully",
+            "users": users_list,
+            "total_users": total_users,
+            "pagination": {
+                "skip": skip,
+                "limit": limit,
+                "returned": len(users_list)
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving users: {str(e)}"
+        )
+
+
+@router.put("/users/{user_id}")
+async def update_user(
+    user_id: int,
+    user_data: dict,
+    db: db_dependency,
+    current_user: user_dependency
+):
+    """
+    Update user data
+    """
+    # Check if user is updating their own data or is admin
+    is_own_profile = current_user.get("user_id") == user_id
+    is_admin = current_user.get("is_admin", False)
+    
+    if not is_own_profile and not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to update this user"
+        )
+    
+    try:
+        # Find the user
+        user = db.query(Users).filter(Users.id == user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        # Define allowed fields that can be updated
+        allowed_fields = ["fname", "lname", "phone", "profile_pic", "is_active"]
+        
+        # If admin, allow more fields
+        if is_admin:
+            allowed_fields.extend(["role", "is_verified"])
+        
+        # Update allowed fields
+        updated_fields = []
+        for field, value in user_data.items():
+            if field in allowed_fields and hasattr(user, field):
+                # Handle enum fields
+                if field == "role" and value:
+                    user.role = UserRole(value)
+                else:
+                    setattr(user, field, value)
+                updated_fields.append(field)
+        
+        # Update the timestamp
+        user.updated_at = datetime.utcnow()
+        
+        db.commit()
+        db.refresh(user)
+        
+        return {
+            "message": "User updated successfully",
+            "updated_fields": updated_fields,
+            "user": {
+                "id": user.id,
+                "fname": user.fname,
+                "lname": user.lname,
+                "email": user.email,
+                "phone": user.phone,
+                "profile_pic": user.profile_pic,
+                "role": user.role.value if user.role else None,
+                "is_active": user.is_active,
+                "is_verified": user.is_verified,
+                "updated_at": user.updated_at.isoformat() if user.updated_at else None
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid data provided: {str(e)}"
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating user: {str(e)}"
+        )
