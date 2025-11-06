@@ -312,7 +312,7 @@ async def get_products(
     returnDay: Optional[str] = Query(None, description="Filter by return day"),
     warranty: Optional[str] = Query(None, description="Filter by warranty"),
     
-    # Category hierarchy filters - UPDATED: Support all category types
+    # Category hierarchy filters
     main_category_id: Optional[List[int]] = Query(None, description="Filter by main category ID(s)"),
     sub_category_id: Optional[List[int]] = Query(None, description="Filter by sub category ID(s)"),
     product_category_id: Optional[List[int]] = Query(None, description="Filter by product category ID(s)"),
@@ -343,11 +343,12 @@ async def get_products(
     # Sorting
     sort_by: str = Query("created_at", description="Field to sort by"),
     sort_order: str = Query("desc", description="Sort order: asc or desc"),
-    
 ):
     try:
+        # Import category models
         from models.Categories import MainCategory, SubCategory, ProductCategory
         
+        # Start with base query
         query = db.query(Product)
         
         # Build filters dynamically
@@ -407,46 +408,32 @@ async def get_products(
         if warranty:
             filters.append(Product.warranty.ilike(f"%{warranty}%"))
         
-        # Category hierarchy filters - UPDATED: Support all category levels
+        # Category hierarchy filters - FIXED: Proper hierarchy traversal with joins
         category_filters_applied = False
         
         # Main Category Filter (gets all products under main category and its children)
         if main_category_id:
             if isinstance(main_category_id, list) and len(main_category_id) > 0:
-                # Get all sub categories under these main categories
-                sub_categories_under_main = db.query(SubCategory.id).filter(
-                    SubCategory.main_category_id.in_(main_category_id)
-                ).subquery()
-                
-                # Get all product categories under those sub categories
-                product_categories_under_sub = db.query(ProductCategory.id).filter(
-                    ProductCategory.sub_category_id.in_(sub_categories_under_main)
-                ).subquery()
-                
-                # Filter products by those product categories
-                query = query.join(ProductCategory)
-                filters.append(ProductCategory.id.in_(product_categories_under_sub))
+                # Join through the complete hierarchy: Product -> ProductCategory -> SubCategory -> MainCategory
+                query = query.join(Product.category).join(ProductCategory.sub_category).join(SubCategory.main_category)
+                filters.append(MainCategory.id.in_(main_category_id))
                 category_filters_applied = True
                 logger.info(f"Filtering by main category IDs: {main_category_id}")
         
         # Sub Category Filter (gets all products under sub category and its product categories)
         if sub_category_id and not category_filters_applied:
             if isinstance(sub_category_id, list) and len(sub_category_id) > 0:
-                # Get all product categories under these sub categories
-                product_categories_under_sub = db.query(ProductCategory.id).filter(
-                    ProductCategory.sub_category_id.in_(sub_category_id)
-                ).subquery()
-                
-                # Filter products by those product categories
-                query = query.join(ProductCategory)
-                filters.append(ProductCategory.id.in_(product_categories_under_sub))
+                # Join through subcategory hierarchy: Product -> ProductCategory -> SubCategory
+                query = query.join(Product.category).join(ProductCategory.sub_category)
+                filters.append(SubCategory.id.in_(sub_category_id))
                 category_filters_applied = True
                 logger.info(f"Filtering by sub category IDs: {sub_category_id}")
         
         # Product Category Filter (direct product category filtering)
         if product_category_id and not category_filters_applied:
             if isinstance(product_category_id, list) and len(product_category_id) > 0:
-                query = query.join(ProductCategory)
+                # Direct product category filter: Product -> ProductCategory
+                query = query.join(Product.category)
                 filters.append(ProductCategory.id.in_(product_category_id))
                 category_filters_applied = True
                 logger.info(f"Filtering by product category IDs: {product_category_id}")
@@ -454,19 +441,19 @@ async def get_products(
         # Legacy category_id filter (treats as product category for backward compatibility)
         if category_id and not category_filters_applied:
             if isinstance(category_id, list) and len(category_id) > 0:
-                query = query.join(ProductCategory)
+                query = query.join(Product.category)
                 filters.append(ProductCategory.id.in_(category_id))
                 category_filters_applied = True
                 logger.info(f"Filtering by legacy category IDs: {category_id}")
         
         # Individual category filters (for backward compatibility)
         if category_slug and not category_filters_applied:
-            query = query.join(ProductCategory)
+            query = query.join(Product.category)
             filters.append(ProductCategory.slug == category_slug)
             category_filters_applied = True
         
         if category_name and not category_filters_applied:
-            query = query.join(ProductCategory)
+            query = query.join(Product.category)
             filters.append(ProductCategory.name.ilike(f"%{category_name}%"))
             category_filters_applied = True
         
@@ -508,10 +495,14 @@ async def get_products(
         if filters:
             query = query.filter(and_(*filters))
         
-        # Get total count before pagination
-        total_count = query.count()
+        # Get total count before pagination - FIXED: Use distinct count when joins are involved
+        if category_filters_applied:
+            # When category joins are applied, we need to count distinct products to avoid duplicates
+            total_count = query.distinct().count()
+        else:
+            total_count = query.count()
         
-        # Apply sorting
+        # Apply sorting - FIXED: Use distinct when joins are involved
         valid_sort_columns = [
             'id', 'title', 'price', 'original_price', 'discount', 'rating', 
             'reviews_count', 'instock', 'created_at', 'updated_at'
@@ -527,10 +518,15 @@ async def get_products(
         else:
             query = query.order_by(sort_column.asc())
         
-        # Apply pagination
-        products = query.offset(skip).limit(limit).all()
+        # Apply pagination - FIXED: Use distinct when joins are involved
+        if category_filters_applied:
+            products = query.distinct().offset(skip).limit(limit).all()
+        else:
+            products = query.offset(skip).limit(limit).all()
         
         logger.info(f"Products query completed: {len(products)} products found out of {total_count} total")
+        logger.info(f"Category filters applied: {category_filters_applied}")
+        logger.info(f"Pagination: skip={skip}, limit={limit}")
         
         return ProductListResponse(
             products=products,
