@@ -1045,7 +1045,8 @@ async def share_product(product_id: int, db: db_dependency):
     encode = encode_id(product.id)
     url = f"{FRONTEND_URL_ONLINE}product/{encode}"
     print(image["url"])
-    img = FRONTEND_URL_ONLINE.rstrip('/')  + image["url"]
+    img = "https://umukamezi.nexventures.net"  + image["url"]
+    print(img)
     # print(img)
     return f"""
     <!DOCTYPE html>
