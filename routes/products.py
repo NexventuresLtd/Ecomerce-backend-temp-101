@@ -486,6 +486,7 @@ async def get_products(
             search_filters = [
                 Product.title.ilike(f"%{search}%"),
                 Product.description.ilike(f"%{search}%"),
+                Product.brock.ilike(f"%{search}%"),
             ]
             search_filters.append(Product.tags.contains([search]))
             search_filters.append(Product.features.contains([search]))
