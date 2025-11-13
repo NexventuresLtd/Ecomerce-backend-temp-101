@@ -30,7 +30,7 @@ class ProductBase(BaseModel):
     features: List[str] = []
     colors: List[Dict[str, Any]] = []
     category_id: Optional[Any] = None
-    images: List[ProductImageSchema] = Field(..., min_items=1, description="List of product images")
+    images: List[ProductImageSchema] = Field(default_factory=list) 
 
 class ProductCreate(ProductBase):
     pass

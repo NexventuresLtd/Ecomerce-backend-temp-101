@@ -172,14 +172,14 @@ def save_product_image_from_file(product_id: int, file: UploadFile, image_type: 
         # Optimize main image
         optimized_data = optimize_image(file_content, image_type)
         
-        # Save main image
+        # Save main image with proper file closure
         main_filename = f"product_{product_id}_{image_type}_{unique_id}.{ext}"
         main_filepath = os.path.join(PRODUCT_IMAGE_FOLDER, main_filename)
         
         with open(main_filepath, "wb") as f:
             f.write(optimized_data)
         
-        # Create and save thumbnail for main images
+        # Create and save thumbnail for main images with proper file closure
         thumbnail_url = None
         if image_type == "main" and PIL_AVAILABLE:
             thumbnail_data = create_thumbnail(file_content)
