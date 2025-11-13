@@ -58,7 +58,7 @@ class ProductUpdate(BaseModel):
     features: Optional[List[str]] = None
     colors: Optional[List[Dict[str, Any]]] = None
     category_id: Optional[int] = None
-    images: Optional[List[ProductImageSchema]] = Field(None, min_items=1, description="List of product images")
+    images: Optional[List[ProductImageSchema]] = Field(default_factory=list) 
 
 class CategoryInfo(BaseModel):
     id: int
