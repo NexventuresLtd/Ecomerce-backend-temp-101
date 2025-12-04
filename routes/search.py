@@ -22,7 +22,7 @@ def build_jsonpath(term: str, field_name: str) -> str:
 
 
 @router.get("/search")
-def search_products_endpoint(query: str, limit: int = 20, skip: int = 0, db: db_dependency = None):
+def search_products_endpoint(query: str, limit: int = 100, skip: int = 0, db: db_dependency = None):
     """
     Progressive product search across multiple fields:
     - Typo correction
