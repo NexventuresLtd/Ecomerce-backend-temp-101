@@ -3,7 +3,7 @@ from fastapi import FastAPI, Depends,Request
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 from Endpoints.Auth import verification, resetPassword ,refreshToken
-from routes import auth, category,products,search,cart,wishlist,billing,dashboard,vlog, report
+from routes import auth, category,products,search,cart,wishlist,billing,dashboard,vlog, report,hero_slider
 from Endpoints.two_factor import otp
 from fastapi.responses import HTMLResponse
 # from db.database import Base,engine
@@ -71,6 +71,7 @@ app.add_middleware(
 # app.add_middleware(PreventDuplicateRequestsMiddleware)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 # Include routers
+app.include_router(hero_slider.router)
 app.include_router(report.router)
 app.include_router(vlog.router)
 app.include_router(dashboard.router)

@@ -2,6 +2,7 @@
 # [file content begin]
 from fastapi import APIRouter
 from sqlalchemy import or_, cast, Text, func, desc
+import re
 from models.Products import Product
 from services.search_utils import (
     correct_typo,
@@ -27,10 +28,10 @@ logger = logging.getLogger(__name__)
 @router.get("/search")
 def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_dependency = None):
     """
-    Simple and effective product search:
-    1. Take user query as-is
-    2. Find products with matching titles
-    3. Rank by relevance
+    Product search that preserves user's original query:
+    1. Use the user's exact query for searching first
+    2. Generate corrected suggestions as fallback
+    3. Return both original and corrected versions
     """
     start_time = time.time()
     
@@ -45,43 +46,41 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
                 "processing_time_ms": 0
             }
 
-        # Clean and prepare query
-        original_query = query.strip().lower()
+        # PRESERVE original query exactly as typed by user
+        original_query = query.strip()
+        original_query_lower = original_query.lower()
         
-        # SIMPLE APPROACH: Just use the query as-is
-        # 1) Try typo correction on the WHOLE query
+        # Get all titles for typo correction
         try:
             all_titles = [p[0] for p in db.query(Product.title).filter(
                 Product.is_active == True
             ).distinct().limit(500).all() if p[0]]
             
-            corrected_query = correct_typo(original_query, all_titles)
+            # Generate corrected query
+            corrected_query = correct_typo(original_query_lower, all_titles)
             logger.info(f"Typo correction: '{original_query}' -> '{corrected_query}'")
         except Exception as e:
             logger.warning(f"Typo correction failed: {e}")
-            corrected_query = original_query
+            corrected_query = original_query_lower
 
-        # 2) Extract search terms - SIMPLE VERSION
-        # Just split the query into words, don't overthink it
+        # Use the ORIGINAL query for search terms extraction
         search_terms = []
-        for word in corrected_query.split():
-            # Clean the word
+        for word in original_query_lower.split():
             clean_word = re.sub(r'[^\w\-]', '', word)
-            if len(clean_word) > 1:  # Keep words longer than 1 character
+            if len(clean_word) > 1:
                 search_terms.append(clean_word)
         
-        # If no search terms (shouldn't happen), use the original query
         if not search_terms:
-            search_terms = [original_query]
+            search_terms = [original_query_lower]
         
         logger.info(f"Search terms: {search_terms} from query: '{original_query}'")
 
-        # 3) DIRECT APPROACH: Search for products with these terms in title
+        # DIRECT APPROACH: Search for products
         results = []
         seen_product_ids = set()
         
-        # STRATEGY 1: Try exact phrase first
-        exact_phrase = corrected_query
+        # STRATEGY 1: Try exact phrase first - using ORIGINAL query
+        exact_phrase = original_query_lower
         exact_matches = db.query(Product).filter(
             Product.is_active == True,
             func.lower(Product.title).ilike(f"%{exact_phrase}%")
@@ -99,9 +98,8 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
         
         logger.info(f"Exact phrase matches: {len(exact_matches)}")
         
-        # STRATEGY 2: Try all words in any order
+        # STRATEGY 2: Try all words from ORIGINAL query
         if len(results) < limit * 2:
-            # Build condition for ALL words
             all_words_conditions = []
             for term in search_terms:
                 if len(term) > 1:
@@ -110,12 +108,11 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
             if all_words_conditions:
                 all_words_matches = db.query(Product).filter(
                     Product.is_active == True,
-                    *all_words_conditions  # AND condition for all words
+                    *all_words_conditions
                 ).limit(limit * 2 - len(results)).all()
                 
                 for product in all_words_matches:
                     if product.id not in seen_product_ids:
-                        # Count how many terms actually match
                         matched_terms = []
                         if product.title:
                             title_lower = product.title.lower()
@@ -133,9 +130,8 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
                 
                 logger.info(f"All words matches: {len(all_words_matches)}")
         
-        # STRATEGY 3: Try partial matches (some words)
+        # STRATEGY 3: Try partial matches
         if len(results) < limit * 2 and len(search_terms) > 1:
-            # Try combinations of words
             for i in range(len(search_terms)):
                 for j in range(i + 1, len(search_terms)):
                     if len(results) >= limit * 2:
@@ -156,7 +152,6 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
                                 matched_terms = [word1, word2]
                                 if product.title:
                                     title_lower = product.title.lower()
-                                    # Check for other terms too
                                     for term in search_terms:
                                         if term not in matched_terms and term in title_lower:
                                             matched_terms.append(term)
@@ -191,41 +186,65 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
                             ))
                             seen_product_ids.add(product.id)
         
-        # 4) Rank results
-        # Add additional scoring based on match quality
+        # FALLBACK STRATEGY 5: If no results, try corrected query
+        if not results and corrected_query != original_query_lower:
+            logger.info(f"No results with original query, trying corrected: '{corrected_query}'")
+            
+            corrected_terms = []
+            for word in corrected_query.split():
+                clean_word = re.sub(r'[^\w\-]', '', word)
+                if len(clean_word) > 1:
+                    corrected_terms.append(clean_word.lower())
+            
+            if corrected_terms:
+                for term in corrected_terms:
+                    if len(results) >= limit * 2:
+                        break
+                    
+                    word_matches = db.query(Product).filter(
+                        Product.is_active == True,
+                        func.lower(Product.title).ilike(f"%{term}%")
+                    ).limit(limit * 2).all()
+                    
+                    for product in word_matches:
+                        if product.id not in seen_product_ids:
+                            results.append(SearchResult(
+                                product=product,
+                                match_type='corrected_fallback',
+                                matched_words=[term],
+                                score=40
+                            ))
+                            seen_product_ids.add(product.id)
+        
+        # Rank results
         for result in results:
-            # Base score already set
             score = result.score
             
-            # Bonus for title starting with query
             if hasattr(result.product, 'title') and result.product.title:
                 title_lower = result.product.title.lower()
-                if corrected_query and title_lower.startswith(corrected_query):
+                if original_query_lower and title_lower.startswith(original_query_lower):
                     score += 30
                 
-                # Bonus for short, relevant titles
                 title_words = result.product.title.split()
                 if len(title_words) < 8 and result.matched_words:
                     score += 10
             
-            # Popularity/rating bonus
             if hasattr(result.product, 'rating') and result.product.rating:
                 score += result.product.rating * 5
             
             result.score = score
         
-        # Sort by score
         results.sort(key=lambda x: x.score, reverse=True)
         
-        # 5) Apply pagination
+        # Apply pagination
         paginated_results = results[skip:skip + limit]
         products = [r.product for r in paginated_results if hasattr(r, 'product')]
         
-        # 6) Generate simple suggestions
+        # Generate suggestions
         suggestions = []
         
-        # Typo correction suggestion
-        if corrected_query != original_query:
+        # Typo correction suggestion - MAINTAIN ORIGINAL STRUCTURE
+        if corrected_query != original_query_lower:
             suggestions.append({
                 "type": "did_you_mean",
                 "original": original_query,
@@ -233,7 +252,7 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
                 "action": "search_with_correction"
             })
         
-        # Related products if we have results
+        # Related products
         if products:
             try:
                 top_product = products[0]
@@ -248,16 +267,15 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
             except Exception as e:
                 logger.error(f"Related products failed: {e}")
         
-        # 7) Match statistics
+        # Match statistics
         match_stats = {}
-        for result in results[:100]:  # First 100 results
+        for result in results[:100]:
             match_type = getattr(result, 'match_type', 'unknown')
             match_stats[match_type] = match_stats.get(match_type, 0) + 1
         
-        # 8) Determine search type
+        # Determine search type
         if not results:
             search_type = "no_matches"
-            # Try a very broad search as last resort
             if search_terms:
                 first_term = search_terms[0]
                 broad_products = db.query(Product).filter(
@@ -270,7 +288,7 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
         else:
             search_type = results[0].match_type if results else "unknown"
         
-        # 9) Final response
+        # Final response - MAINTAIN ORIGINAL STRUCTURE EXACTLY
         processing_time = (time.time() - start_time) * 1000
         
         # Prepare products for response
@@ -291,9 +309,10 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
                 }
                 response_products.append(product_dict)
         
+        # ORIGINAL RESPONSE STRUCTURE - DO NOT CHANGE
         response = {
-            "query": original_query,
-            "corrected_query": corrected_query,
+            "query": original_query,  # Keep as-is
+            "corrected_query": corrected_query,  # Keep original field name
             "search_terms": search_terms,
             "search_type": search_type,
             "match_statistics": match_stats,
@@ -310,7 +329,7 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
         logger.error(f"Search endpoint error: {e}", exc_info=True)
         processing_time = (time.time() - start_time) * 1000
         
-        # EMERGENCY FALLBACK: Simple search
+        # EMERGENCY FALLBACK
         try:
             simple_products = db.query(Product).filter(
                 Product.is_active == True,
