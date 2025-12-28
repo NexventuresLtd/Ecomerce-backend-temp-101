@@ -1,21 +1,9 @@
 # [file name]: search.py
 # [file content begin]
 from fastapi import APIRouter
-from sqlalchemy import or_, cast, Text, func, desc
-import re
+from sqlalchemy import or_, func
+from sqlalchemy.orm import Session
 from models.Products import Product
-from services.search_utils import (
-    correct_typo,
-    filter_related_products,
-    escape_jsonpath_regex,
-    extract_search_terms,
-    get_title_match_products,
-    get_other_field_products,
-    rank_products_by_relevance,
-    generate_search_suggestions,
-    SearchResult,
-    find_matching_words_in_title
-)
 from db.connection import db_dependency
 from typing import List
 import time
@@ -28,10 +16,8 @@ logger = logging.getLogger(__name__)
 @router.get("/search")
 def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_dependency = None):
     """
-    Product search that preserves user's original query:
-    1. Use the user's exact query for searching first
-    2. Generate corrected suggestions as fallback
-    3. Return both original and corrected versions
+    Simple product search across all fields.
+    Returns full product objects that match the search query.
     """
     start_time = time.time()
     
@@ -46,281 +32,117 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
                 "processing_time_ms": 0
             }
 
-        # PRESERVE original query exactly as typed by user
-        original_query = query.strip()
-        original_query_lower = original_query.lower()
+        # Clean the query
+        search_query = query.strip().lower()
         
-        # Get all titles for typo correction
-        try:
-            all_titles = [p[0] for p in db.query(Product.title).filter(
-                Product.is_active == True
-            ).distinct().limit(500).all() if p[0]]
-            
-            # Generate corrected query
-            corrected_query = correct_typo(original_query_lower, all_titles)
-            logger.info(f"Typo correction: '{original_query}' -> '{corrected_query}'")
-        except Exception as e:
-            logger.warning(f"Typo correction failed: {e}")
-            corrected_query = original_query_lower
-
-        # Use the ORIGINAL query for search terms extraction
-        search_terms = []
-        for word in original_query_lower.split():
-            clean_word = re.sub(r'[^\w\-]', '', word)
-            if len(clean_word) > 1:
-                search_terms.append(clean_word)
+        # Search across multiple fields
+        search_conditions = []
         
-        if not search_terms:
-            search_terms = [original_query_lower]
+        # Title search
+        search_conditions.append(func.lower(Product.title).ilike(f"%{search_query}%"))
         
-        logger.info(f"Search terms: {search_terms} from query: '{original_query}'")
-
-        # DIRECT APPROACH: Search for products
-        results = []
-        seen_product_ids = set()
+        # Description search
+        search_conditions.append(func.lower(Product.description).ilike(f"%{search_query}%"))
         
-        # STRATEGY 1: Try exact phrase first - using ORIGINAL query
-        exact_phrase = original_query_lower
-        exact_matches = db.query(Product).filter(
+        # Tags search (assuming tags is a JSON/array field)
+        search_conditions.append(Product.tags.contains([search_query]))
+        
+        # Features search (assuming features is a JSON/array field)
+        search_conditions.append(Product.features.contains([search_query]))
+        
+        # Also search for individual words if query has multiple words
+        query_words = search_query.split()
+        if len(query_words) > 1:
+            for word in query_words:
+                if len(word) > 2:  # Only search for words longer than 2 characters
+                    search_conditions.append(func.lower(Product.title).ilike(f"%{word}%"))
+                    search_conditions.append(func.lower(Product.description).ilike(f"%{word}%"))
+        
+        # Execute the query
+        products = db.query(Product).filter(
             Product.is_active == True,
-            func.lower(Product.title).ilike(f"%{exact_phrase}%")
-        ).limit(limit * 2).all()
+            or_(*search_conditions)
+        ).order_by(Product.created_at.desc()).offset(skip).limit(limit).all()
         
-        for product in exact_matches:
-            if product.id not in seen_product_ids:
-                results.append(SearchResult(
-                    product=product,
-                    match_type='exact_phrase',
-                    matched_words=search_terms,
-                    score=200
-                ))
-                seen_product_ids.add(product.id)
+        # Get total count for the same search
+        total_count = db.query(Product).filter(
+            Product.is_active == True,
+            or_(*search_conditions)
+        ).count()
         
-        logger.info(f"Exact phrase matches: {len(exact_matches)}")
-        
-        # STRATEGY 2: Try all words from ORIGINAL query
-        if len(results) < limit * 2:
-            all_words_conditions = []
-            for term in search_terms:
-                if len(term) > 1:
-                    all_words_conditions.append(func.lower(Product.title).ilike(f"%{term}%"))
-            
-            if all_words_conditions:
-                all_words_matches = db.query(Product).filter(
-                    Product.is_active == True,
-                    *all_words_conditions
-                ).limit(limit * 2 - len(results)).all()
-                
-                for product in all_words_matches:
-                    if product.id not in seen_product_ids:
-                        matched_terms = []
-                        if product.title:
-                            title_lower = product.title.lower()
-                            for term in search_terms:
-                                if term in title_lower:
-                                    matched_terms.append(term)
-                        
-                        results.append(SearchResult(
-                            product=product,
-                            match_type='all_words',
-                            matched_words=matched_terms,
-                            score=150 if len(matched_terms) == len(search_terms) else 120
-                        ))
-                        seen_product_ids.add(product.id)
-                
-                logger.info(f"All words matches: {len(all_words_matches)}")
-        
-        # STRATEGY 3: Try partial matches
-        if len(results) < limit * 2 and len(search_terms) > 1:
-            for i in range(len(search_terms)):
-                for j in range(i + 1, len(search_terms)):
-                    if len(results) >= limit * 2:
-                        break
-                    
-                    word1 = search_terms[i]
-                    word2 = search_terms[j]
-                    
-                    if len(word1) > 1 and len(word2) > 1:
-                        partial_matches = db.query(Product).filter(
-                            Product.is_active == True,
-                            func.lower(Product.title).ilike(f"%{word1}%"),
-                            func.lower(Product.title).ilike(f"%{word2}%")
-                        ).limit(20).all()
-                        
-                        for product in partial_matches:
-                            if product.id not in seen_product_ids:
-                                matched_terms = [word1, word2]
-                                if product.title:
-                                    title_lower = product.title.lower()
-                                    for term in search_terms:
-                                        if term not in matched_terms and term in title_lower:
-                                            matched_terms.append(term)
-                                
-                                results.append(SearchResult(
-                                    product=product,
-                                    match_type='partial_match',
-                                    matched_words=matched_terms,
-                                    score=80 + (len(matched_terms) * 20)
-                                ))
-                                seen_product_ids.add(product.id)
-        
-        # STRATEGY 4: Try individual word matches
-        if len(results) < limit * 2:
-            for term in search_terms:
-                if len(results) >= limit * 2:
-                    break
-                
-                if len(term) > 1:
-                    word_matches = db.query(Product).filter(
-                        Product.is_active == True,
-                        func.lower(Product.title).ilike(f"%{term}%")
-                    ).limit(limit * 2 - len(results)).all()
-                    
-                    for product in word_matches:
-                        if product.id not in seen_product_ids:
-                            results.append(SearchResult(
-                                product=product,
-                                match_type='single_word',
-                                matched_words=[term],
-                                score=50
-                            ))
-                            seen_product_ids.add(product.id)
-        
-        # FALLBACK STRATEGY 5: If no results, try corrected query
-        if not results and corrected_query != original_query_lower:
-            logger.info(f"No results with original query, trying corrected: '{corrected_query}'")
-            
-            corrected_terms = []
-            for word in corrected_query.split():
-                clean_word = re.sub(r'[^\w\-]', '', word)
-                if len(clean_word) > 1:
-                    corrected_terms.append(clean_word.lower())
-            
-            if corrected_terms:
-                for term in corrected_terms:
-                    if len(results) >= limit * 2:
-                        break
-                    
-                    word_matches = db.query(Product).filter(
-                        Product.is_active == True,
-                        func.lower(Product.title).ilike(f"%{term}%")
-                    ).limit(limit * 2).all()
-                    
-                    for product in word_matches:
-                        if product.id not in seen_product_ids:
-                            results.append(SearchResult(
-                                product=product,
-                                match_type='corrected_fallback',
-                                matched_words=[term],
-                                score=40
-                            ))
-                            seen_product_ids.add(product.id)
-        
-        # Rank results
-        for result in results:
-            score = result.score
-            
-            if hasattr(result.product, 'title') and result.product.title:
-                title_lower = result.product.title.lower()
-                if original_query_lower and title_lower.startswith(original_query_lower):
-                    score += 30
-                
-                title_words = result.product.title.split()
-                if len(title_words) < 8 and result.matched_words:
-                    score += 10
-            
-            if hasattr(result.product, 'rating') and result.product.rating:
-                score += result.product.rating * 5
-            
-            result.score = score
-        
-        results.sort(key=lambda x: x.score, reverse=True)
-        
-        # Apply pagination
-        paginated_results = results[skip:skip + limit]
-        products = [r.product for r in paginated_results if hasattr(r, 'product')]
-        
-        # Generate suggestions
-        suggestions = []
-        
-        # Typo correction suggestion - MAINTAIN ORIGINAL STRUCTURE
-        if corrected_query != original_query_lower:
-            suggestions.append({
-                "type": "did_you_mean",
-                "original": original_query,
-                "corrected": corrected_query,
-                "action": "search_with_correction"
-            })
-        
-        # Related products
-        if products:
-            try:
-                top_product = products[0]
-                related = filter_related_products(db, top_product, limit=3)
-                for rp in related:
-                    if hasattr(rp, 'id') and hasattr(rp, 'title'):
-                        suggestions.append({
-                            "type": "related_product",
-                            "product_id": rp.id,
-                            "title": rp.title[:50] + "..." if len(rp.title) > 50 else rp.title
-                        })
-            except Exception as e:
-                logger.error(f"Related products failed: {e}")
-        
-        # Match statistics
-        match_stats = {}
-        for result in results[:100]:
-            match_type = getattr(result, 'match_type', 'unknown')
-            match_stats[match_type] = match_stats.get(match_type, 0) + 1
-        
-        # Determine search type
-        if not results:
-            search_type = "no_matches"
-            if search_terms:
-                first_term = search_terms[0]
-                broad_products = db.query(Product).filter(
-                    Product.is_active == True,
-                    func.lower(Product.title).ilike(f"%{first_term}%")
-                ).limit(limit).all()
-                
-                products = broad_products
-                search_type = "broad_match"
-        else:
-            search_type = results[0].match_type if results else "unknown"
-        
-        # Final response - MAINTAIN ORIGINAL STRUCTURE EXACTLY
+        # Prepare the response
         processing_time = (time.time() - start_time) * 1000
         
-        # Prepare products for response
+        # Convert products to response format
         response_products = []
-        for result in paginated_results:
-            if hasattr(result, 'product'):
-                product = result.product
-                product_dict = {
-                    'id': product.id,
-                    'title': product.title,
-                    'price': product.price if hasattr(product, 'price') else None,
-                    'image_url': product.image_url if hasattr(product, 'image_url') else None,
-                    'search_metadata': {
-                        'match_type': result.match_type,
-                        'score': result.score,
-                        'matched_words': result.matched_words or []
-                    }
+        for product in products:
+            product_dict = {
+                'id': product.id,
+                'title': product.title,
+                'description': product.description if hasattr(product, 'description') else None,
+                'price': product.price if hasattr(product, 'price') else None,
+                'original_price': product.original_price if hasattr(product, 'original_price') else None,
+                'discount': product.discount if hasattr(product, 'discount') else None,
+                'rating': product.rating if hasattr(product, 'rating') else 0.0,
+                'is_new': product.is_new if hasattr(product, 'is_new') else None,
+                'is_featured': product.is_featured if hasattr(product, 'is_featured') else False,
+                'is_active': product.is_active if hasattr(product, 'is_active') else True,
+                'reviews_count': product.reviews_count if hasattr(product, 'reviews_count') else 0,
+                'instock': product.instock if hasattr(product, 'instock') else 0,
+                'delivery_fee': product.delivery_fee if hasattr(product, 'delivery_fee') else None,
+                'brock': product.brock if hasattr(product, 'brock') else None,
+                'returnDay': product.returnDay if hasattr(product, 'returnDay') else None,
+                'warranty': product.warranty if hasattr(product, 'warranty') else None,
+                'hover_image': product.hover_image if hasattr(product, 'hover_image') else None,
+                'owner_id': product.owner_id if hasattr(product, 'owner_id') else None,
+                'tutorial_video': product.tutorial_video if hasattr(product, 'tutorial_video') else None,
+                'tags': product.tags if hasattr(product, 'tags') else [],
+                'features': product.features if hasattr(product, 'features') else [],
+                'colors': product.colors if hasattr(product, 'colors') else [],
+                'created_at': product.created_at if hasattr(product, 'created_at') else None,
+                'updated_at': product.updated_at if hasattr(product, 'updated_at') else None,
+                'category_id': product.category_id if hasattr(product, 'category_id') else None,
+                'images': [],
+                'category': None,
+                'search_metadata': {
+                    'match_type': 'simple_search',
+                    'score': 100,
+                    'matched_words': query_words
                 }
-                response_products.append(product_dict)
+            }
+            
+            # Handle images if they exist
+            if hasattr(product, 'images') and product.images:
+                for img in product.images:
+                    product_dict['images'].append({
+                        'url': img,
+                        'is_primary': False  # You might need to adjust this based on your data structure
+                    })
+            
+            # Handle category if it exists
+            if hasattr(product, 'category') and product.category:
+                product_dict['category'] = {
+                    'id': product.category.id,
+                    'name': product.category.name,
+                    'slug': product.category.slug,
+                    'image': product.category.image if hasattr(product.category, 'image') else None
+                }
+            
+            response_products.append(product_dict)
         
-        # ORIGINAL RESPONSE STRUCTURE - DO NOT CHANGE
+        # Simple response
         response = {
-            "query": original_query,  # Keep as-is
-            "corrected_query": corrected_query,  # Keep original field name
-            "search_terms": search_terms,
-            "search_type": search_type,
-            "match_statistics": match_stats,
+            "query": query,
+            "corrected_query": query,
+            "search_terms": query_words,
+            "search_type": "simple_search",
+            "match_statistics": {"simple_search": len(products)},
             "products": response_products,
-            "suggestions": suggestions,
-            "total_results": len(results),
-            "showing_results": len(response_products),
-            "processing_time_ms": round(processing_time, 2)
+            "suggestions": [],
+            "total_results": total_count,
+            "showing_results": len(products),
+            "processing_time_ms": round(processing_time, 2),
+            "note": "Simple search across all product fields"
         }
         
         return response
@@ -329,84 +151,231 @@ def search_products_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_
         logger.error(f"Search endpoint error: {e}", exc_info=True)
         processing_time = (time.time() - start_time) * 1000
         
-        # EMERGENCY FALLBACK
-        try:
-            simple_products = db.query(Product).filter(
-                Product.is_active == True,
-                func.lower(Product.title).ilike(f"%{query}%")
-            ).limit(limit).all()
-            
+        return {
+            "query": query,
+            "error": f"Search failed: {str(e)}",
+            "products": [],
+            "suggestions": [],
+            "total_results": 0,
+            "processing_time_ms": round(processing_time, 2)
+        }
+
+
+@router.get("/search/simple")
+def simple_search_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_dependency = None):
+    """
+    Even simpler search - just searches in title and description.
+    """
+    start_time = time.time()
+    
+    try:
+        if not query or query.strip() == "":
             return {
                 "query": query,
-                "search_type": "emergency_fallback",
-                "products": simple_products,
-                "suggestions": [{"type": "info", "message": "Using simple search due to error"}],
-                "total_results": len(simple_products),
-                "processing_time_ms": round(processing_time, 2)
-            }
-        except:
-            return {
-                "query": query,
-                "error": "Search failed completely",
                 "products": [],
-                "suggestions": [],
-                "processing_time_ms": round(processing_time, 2)
+                "total_results": 0,
+                "processing_time_ms": 0
             }
 
+        search_query = query.strip().lower()
+        
+        # Search only in title and description
+        products = db.query(Product).filter(
+            Product.is_active == True,
+            or_(
+                func.lower(Product.title).ilike(f"%{search_query}%"),
+                func.lower(Product.description).ilike(f"%{search_query}%")
+            )
+        ).order_by(Product.created_at.desc()).offset(skip).limit(limit).all()
+        
+        total_count = db.query(Product).filter(
+            Product.is_active == True,
+            or_(
+                func.lower(Product.title).ilike(f"%{search_query}%"),
+                func.lower(Product.description).ilike(f"%{search_query}%")
+            )
+        ).count()
+        
+        processing_time = (time.time() - start_time) * 1000
+        
+        # Convert products to response format
+        response_products = []
+        for product in products:
+            product_dict = {
+                'id': product.id,
+                'title': product.title,
+                'description': product.description if hasattr(product, 'description') else None,
+                'price': product.price if hasattr(product, 'price') else None,
+                'original_price': product.original_price if hasattr(product, 'original_price') else None,
+                'discount': product.discount if hasattr(product, 'discount') else None,
+                'rating': product.rating if hasattr(product, 'rating') else 0.0,
+                'is_new': product.is_new if hasattr(product, 'is_new') else None,
+                'is_featured': product.is_featured if hasattr(product, 'is_featured') else False,
+                'is_active': product.is_active if hasattr(product, 'is_active') else True,
+                'reviews_count': product.reviews_count if hasattr(product, 'reviews_count') else 0,
+                'instock': product.instock if hasattr(product, 'instock') else 0,
+                'delivery_fee': product.delivery_fee if hasattr(product, 'delivery_fee') else None,
+                'brock': product.brock if hasattr(product, 'brock') else None,
+                'returnDay': product.returnDay if hasattr(product, 'returnDay') else None,
+                'warranty': product.warranty if hasattr(product, 'warranty') else None,
+                'hover_image': product.hover_image if hasattr(product, 'hover_image') else None,
+                'owner_id': product.owner_id if hasattr(product, 'owner_id') else None,
+                'tutorial_video': product.tutorial_video if hasattr(product, 'tutorial_video') else None,
+                'tags': product.tags if hasattr(product, 'tags') else [],
+                'features': product.features if hasattr(product, 'features') else [],
+                'colors': product.colors if hasattr(product, 'colors') else [],
+                'created_at': product.created_at if hasattr(product, 'created_at') else None,
+                'updated_at': product.updated_at if hasattr(product, 'updated_at') else None,
+                'category_id': product.category_id if hasattr(product, 'category_id') else None,
+                'images': [],
+                'category': None,
+                'search_metadata': {
+                    'match_type': 'simple_title_desc',
+                    'score': 100,
+                    'matched_words': [search_query]
+                }
+            }
+            
+            # Handle images
+            if hasattr(product, 'images') and product.images:
+                for img in product.images:
+                    product_dict['images'].append({
+                        'url': img,
+                        'is_primary': False
+                    })
+            
+            response_products.append(product_dict)
+        
+        return {
+            "query": query,
+            "products": response_products,
+            "total_results": total_count,
+            "showing_results": len(products),
+            "processing_time_ms": round(processing_time, 2)
+        }
+        
+    except Exception as e:
+        logger.error(f"Simple search endpoint error: {e}", exc_info=True)
+        processing_time = (time.time() - start_time) * 1000
+        
+        return {
+            "query": query,
+            "error": f"Search failed: {str(e)}",
+            "products": [],
+            "total_results": 0,
+            "processing_time_ms": round(processing_time, 2)
+        }
 
-@router.get("/search/test")
-def test_search_endpoint(query: str, db: db_dependency = None):
+
+@router.get("/search/exact")
+def exact_search_endpoint(query: str, limit: int = 50, skip: int = 0, db: db_dependency = None):
     """
-    Test endpoint to see raw matching.
+    Exact search - tries to match the exact phrase first.
     """
-    if not query:
-        return {"error": "No query provided"}
+    start_time = time.time()
     
-    query_lower = query.lower()
-    
-    # Get all products
-    all_products = db.query(Product).filter(
-        Product.is_active == True
-    ).limit(50).all()
-    
-    # Simple analysis
-    analysis = []
-    for product in all_products:
-        if hasattr(product, 'title'):
-            title = product.title
-            title_lower = title.lower()
-            
-            # Check for exact phrase
-            exact_match = query_lower in title_lower
-            
-            # Check for individual words
-            query_words = [w for w in query_lower.split() if len(w) > 1]
-            matched_words = []
+    try:
+        if not query or query.strip() == "":
+            return {
+                "query": query,
+                "products": [],
+                "total_results": 0,
+                "processing_time_ms": 0
+            }
+
+        search_query = query.strip().lower()
+        query_words = search_query.split()
+        
+        # First try exact phrase match
+        exact_products = db.query(Product).filter(
+            Product.is_active == True,
+            func.lower(Product.title).ilike(f"%{search_query}%")
+        ).order_by(Product.created_at.desc()).all()
+        
+        # If no exact matches, try word by word
+        if not exact_products:
+            conditions = []
             for word in query_words:
-                if word in title_lower:
-                    matched_words.append(word)
+                if len(word) > 2:
+                    conditions.append(func.lower(Product.title).ilike(f"%{word}%"))
             
-            analysis.append({
-                "id": product.id,
-                "title": title,
-                "exact_phrase_match": exact_match,
-                "matched_words": matched_words,
-                "all_words_match": len(matched_words) == len(query_words) and query_words,
-                "match_percentage": len(matched_words) / len(query_words) if query_words else 0
-            })
-    
-    # Sort by match quality
-    analysis.sort(key=lambda x: (
-        -x['exact_phrase_match'],
-        -x['all_words_match'],
-        -x['match_percentage'],
-        -len(x['matched_words'])
-    ))
-    
-    return {
-        "query": query,
-        "query_words": [w for w in query.lower().split() if len(w) > 1],
-        "products_found": len([a for a in analysis if a['matched_words']]),
-        "analysis": analysis[:20]
-    }
+            if conditions:
+                exact_products = db.query(Product).filter(
+                    Product.is_active == True,
+                    or_(*conditions)
+                ).order_by(Product.created_at.desc()).all()
+        
+        # Apply pagination
+        products = exact_products[skip:skip + limit]
+        total_count = len(exact_products)
+        
+        processing_time = (time.time() - start_time) * 1000
+        
+        # Convert products to response format
+        response_products = []
+        for product in products:
+            product_dict = {
+                'id': product.id,
+                'title': product.title,
+                'description': product.description if hasattr(product, 'description') else None,
+                'price': product.price if hasattr(product, 'price') else None,
+                'original_price': product.original_price if hasattr(product, 'original_price') else None,
+                'discount': product.discount if hasattr(product, 'discount') else None,
+                'rating': product.rating if hasattr(product, 'rating') else 0.0,
+                'is_new': product.is_new if hasattr(product, 'is_new') else None,
+                'is_featured': product.is_featured if hasattr(product, 'is_featured') else False,
+                'is_active': product.is_active if hasattr(product, 'is_active') else True,
+                'reviews_count': product.reviews_count if hasattr(product, 'reviews_count') else 0,
+                'instock': product.instock if hasattr(product, 'instock') else 0,
+                'delivery_fee': product.delivery_fee if hasattr(product, 'delivery_fee') else None,
+                'brock': product.brock if hasattr(product, 'brock') else None,
+                'returnDay': product.returnDay if hasattr(product, 'returnDay') else None,
+                'warranty': product.warranty if hasattr(product, 'warranty') else None,
+                'hover_image': product.hover_image if hasattr(product, 'hover_image') else None,
+                'owner_id': product.owner_id if hasattr(product, 'owner_id') else None,
+                'tutorial_video': product.tutorial_video if hasattr(product, 'tutorial_video') else None,
+                'tags': product.tags if hasattr(product, 'tags') else [],
+                'features': product.features if hasattr(product, 'features') else [],
+                'colors': product.colors if hasattr(product, 'colors') else [],
+                'created_at': product.created_at if hasattr(product, 'created_at') else None,
+                'updated_at': product.updated_at if hasattr(product, 'updated_at') else None,
+                'category_id': product.category_id if hasattr(product, 'category_id') else None,
+                'images': [],
+                'category': None,
+                'search_metadata': {
+                    'match_type': 'exact_search',
+                    'score': 100,
+                    'matched_words': query_words
+                }
+            }
+            
+            # Handle images
+            if hasattr(product, 'images') and product.images:
+                for img in product.images:
+                    product_dict['images'].append({
+                        'url': img,
+                        'is_primary': False
+                    })
+            
+            response_products.append(product_dict)
+        
+        return {
+            "query": query,
+            "products": response_products,
+            "total_results": total_count,
+            "showing_results": len(products),
+            "processing_time_ms": round(processing_time, 2)
+        }
+        
+    except Exception as e:
+        logger.error(f"Exact search endpoint error: {e}", exc_info=True)
+        processing_time = (time.time() - start_time) * 1000
+        
+        return {
+            "query": query,
+            "error": f"Search failed: {str(e)}",
+            "products": [],
+            "total_results": 0,
+            "processing_time_ms": round(processing_time, 2)
+        }
 # [file content end]
